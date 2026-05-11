@@ -1,0 +1,14 @@
+/nrl_client.log
+/assets/
+/__pycache__/
+/config.yaml
+/config2.yaml
+/test_audio_quality.py
+/test_customtkinter.py
+/test_main_update.py
+/test_packet_counter.py
+/test_protocol.py
+/validate_protocol.py
+/build/
+/dist/
+/*.egg-info/

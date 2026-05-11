@@ -1,0 +1,10 @@
+pyaudio==0.2.11
+pyyaml==6.0.1
+numpy==1.24.3
+customtkinter==5.2.2
+# 以下为可选依赖，预发布版本不打包：
+# av>=12.0.0       # PyAV (FFmpeg封装，提供Opus编解码支持) — 约30-50MB
+# opuslib>=3.0.1  # 可选：原生opus绑定（需要额外安装opus DLL）
+# requests>=2.28.0  # IP地理定位回退方案（位置消息功能）
+# winrt-Windows-Devices-Geolocation>=2.0.0  # 可选：Windows Location API (GPS定位)
+# winrt-Windows-Foundation>=2.0.0           # 可选：Windows Foundation 类型（Geolocation 依赖）
