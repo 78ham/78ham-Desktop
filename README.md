@@ -1,6 +1,6 @@
-﻿# 78HAM Desktop Client
+﻿# 78HAM Desktop 桌面客户端
 
-78HAM 对讲机客户端 — 基于 Python 的业余无线电网络对讲应用，适用于 Windows 桌面平台。
+78HAM  — 基于 Python 的跨平台业余无线电网络对讲应用，本项目适用于 Windows 桌面平台。
 
 基于项目：
 
@@ -44,17 +44,11 @@
 ├── gui_client_ctk.py        # CustomTkinter 图形界面（默认）
 ├── gui_client.py            # Tkinter 图形界面（备选）
 ├── diagnose.py              # 诊断脚本
-├── validate_protocol.py     # 协议一致性验证
-├── test_audio_quality.py    # 音频质量测试
-├── test_protocol.py         # 协议单元测试
-├── test_packet_counter.py   # 包计数器测试
-├── test_customtkinter.py    # CustomTkinter 兼容性测试
-├── test_main_update.py      # 主程序更新测试
 ├── config.yaml              # 配置文件
 ├── build.ps1                # 一键构建脚本
 ├── requirements.txt         # Python 依赖
 ├── LICENSE                  # MIT 许可证
-└── README.md                # 本文件
+└── README.md                # 自述文件
 ```
 
 ## 使用说明
