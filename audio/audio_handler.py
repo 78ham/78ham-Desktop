@@ -9,7 +9,8 @@ import time
 import pyaudio #type:ignore
 from typing import Optional, Callable, Dict
 from collections import deque
-from nrl_protocol import G711Codec, OpusCodec, NRLPacket
+from core.codec import G711Codec, OpusCodec
+from core.protocol import PacketType
 
 class AudioHandler:
     """音频处理类"""
@@ -774,7 +775,7 @@ class VoiceProcessor:
         用于接收端自动识别数据包类型并解码，
         避免因本端codec设置与远端不同导致解码失败。
         """
-        if packet_type == NRLPacket.TYPE_OPUS:
+        if packet_type == PacketType.OPUS:
             return self._decode_opus(data)
         else:
             return self._decode_g711(data)

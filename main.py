@@ -1,41 +1,17 @@
 """
-78HAM客户端Demo
+78HAM 桌面客户端入口
 
-基于78HAM项目开发的Python客户端，实现基本的业余无线电网络互联功能
-
-功能特性:
-- 设备上线注册
-- 语音通信 (G.711编解码)
-- 文本消息
-- 心跳维持
-- 音频设备管理
-- 图形化界面
-
-使用方法:
-1. 配置config.yaml文件
-2. 运行 python main.py
-3. 点击"连接"按钮连接到服务器
-4. 使用PTT按钮进行语音通信
-5. 发送文本消息
-
-协议说明:
-- 基于NRL2协议
-- UDP端口60050
-- 支持G.711 A-law语音编解码
-- 心跳间隔30秒
+基于模块化架构，使用 TalkService 作为核心业务编排层。
 """
-
 import sys
 import os
 import argparse
 import logging
 
-# 添加当前目录到Python路径
+# 添加当前目录到 Python 路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 
-from nrl_client import get_os_display_name, OS_NAME_MAP
-syskd = get_os_display_name()
 
 def setup_logging(level=logging.INFO):
     """设置日志系统"""
@@ -44,235 +20,178 @@ def setup_logging(level=logging.INFO):
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
             logging.StreamHandler(sys.stdout),
-            logging.FileHandler('nrl_client.log', encoding='utf-8')
+            logging.FileHandler('78ham.log', encoding='utf-8'),
         ]
     )
 
+
 def main():
-    """主函数"""
-    parser = argparse.ArgumentParser(description='78HAM客户端Demo')
+    parser = argparse.ArgumentParser(description='78HAM 桌面客户端')
     parser.add_argument('--config', '-c', default='config.yaml',
-                       help='配置文件路径 (默认: config.yaml)')
+                        help='配置文件路径 (默认: config.yaml)')
     parser.add_argument('--no-gui', action='store_true',
-                       help='无GUI模式，使用命令行界面')
+                        help='命令行模式')
     parser.add_argument('--debug', action='store_true',
-                       help='启用调试模式')
+                        help='启用调试模式')
     parser.add_argument('--test-audio', action='store_true',
-                       help='测试音频设备并退出')
+                        help='测试音频设备并退出')
     parser.add_argument('--list-audio', action='store_true',
-                       help='列出音频设备并退出')
-    parser.add_argument('--gui', choices=['ctk', 'tk'], default='ctk',
-                       help='选择GUI类型: ctk (现代CustomTkinter, 默认) 或 tk (传统Tkinter)')
-    
+                        help='列出音频设备并退出')
+
     args = parser.parse_args()
-    
-    # 设置日志级别
+
     log_level = logging.DEBUG if args.debug else logging.INFO
     setup_logging(log_level)
-    
     logger = logging.getLogger(__name__)
-    
+
     try:
         # 音频设备测试
         if args.test_audio or args.list_audio:
-            from audio_handler import AudioHandler
-            audio_handler = AudioHandler()
-            
+            from audio.audio_manager import AudioManager
+            mgr = AudioManager()
             if args.list_audio:
                 print("音频设备列表:")
-                devices = audio_handler.list_audio_devices()
+                mgr.list_devices()
             else:
                 print("开始音频设备测试...")
-                audio_handler.test_audio_devices()
-            
-            audio_handler.close()
+            mgr.close()
             return
-        
-        # GUI模式
+
+        # GUI 模式
         if not args.no_gui:
             try:
-                if args.gui == 'ctk':
-                    # 默认使用现代CustomTkinter GUI
-                    from gui_client_ctk import NRLGUIClient
-                    gui_type = "CustomTkinter"
-                else:
-                    from gui_client import NRLGUIClient
-                    gui_type = "Tkinter"
-                
-                logger.info(f"启动78HAM客户端 ({gui_type} GUI模式)")
-                app = NRLGUIClient()
+                from ui.app import App
+                logger.info("启动 78HAM 客户端 (GUI)")
+                app = App(args.config)
                 app.run()
-                
-            except ImportError:
-                if args.gui == 'ctk':
-                    logger.warning("CustomTkinter未安装，尝试回退到Tkinter GUI...")
-                    try:
-                        from gui_client import NRLGUIClient
-                        logger.info("启动78HAM客户端 (Tkinter GUI模式 - 回退)")
-                        app = NRLGUIClient()
-                        app.run()
-                    except ImportError:
-                        logger.error("所有GUI组件导入失败，尝试使用命令行模式...")
-                        args.no_gui = True
-                else:
-                    logger.error(f"GUI组件导入失败，尝试使用命令行模式...")
-                    args.no_gui = True
-        
+                return
+            except ImportError as e:
+                logger.warning(f"GUI 启动失败 ({e})，回退到命令行模式")
+                args.no_gui = True
+
         # 命令行模式
         if args.no_gui:
-            from nrl_client import NRLClient
-            
-            logger.info("启动78HAM客户端 (命令行模式)")
-            logger.info(f"系统类型: {syskd}")
-            
-            # 创建客户端
-            client = NRLClient(args.config)
-            
-            # 简单的命令行界面
-            print("\n78HAM客户端命令行界面")
-            print(f"当前操作系统是：{syskd}")
-            print("可用命令:")
-            print("  connect - 连接到服务器")
-            print("  disconnect - 断开连接")
-            print("  status - 查看状态")
-            print("  send <消息> - 发送文本消息")
-            print("  rooms - 拉取房间列表")
-            print("  join <房间ID> - 加入指定房间")
-            print("  loc [lat lng] - 发送位置 (自动GPS或手动坐标)")
-            print("  voice_start - 开始语音传输")
-            print("  voice_stop - 停止语音传输")
-            print("  help - 列出所有可用命令")
-            print("  exit - 退出")
-            print()
-            
-            while True:
-                try:
-                    command = input("> ").strip().lower()
-                    
-                    if command == 'exit':
-                        break
-                    elif command == 'connect':
-                        if client.connect():
-                            print("连接成功")
-                        else:
-                            print("连接失败")
-                    elif command == 'disconnect':
-                        client.disconnect()
-                        print("已断开连接")
-                    elif command == 'status':
-                        status = client.get_status()
-                        print(f"状态: {status}")
-                    elif command.startswith('send '):
-                        message = command[5:]
-                        if client.send_text_message(message):
-                            print(f"发送消息: {message}")
-                        else:
-                            print("发送失败")
-                    elif command == 'voice_start':
-                        if client.start_voice_transmission():
-                            print("语音传输已启动")
-                        else:
-                            print("启动语音传输失败")
-                    elif command == 'voice_stop':
-                        client.stop_voice_transmission()
-                        print("语音传输已停止")
-                    elif command == 'rooms':
-                        if not client.is_connected:
-                            print("请先连接到服务器")
-                        else:
-                            # 设置回调打印结果
-                            def _on_group_list(gl):
-                                print(f"\n房间列表 (共 {len(gl)} 个):")
-                                for g in gl:
-                                    marker = " <-- 当前" if g['id'] == client.current_group_id else ""
-                                    print(f"  {g['id']:>4}  {g['name']}{marker}")
-                                print()
-                            client.group_list_callback = _on_group_list
-                            if client.request_group_list():
-                                print("正在获取房间列表...")
-                            else:
-                                print("发送请求失败")
-                    elif command.startswith('join '):
-                        if not client.is_connected:
-                            print("请先连接到服务器")
-                        else:
-                            try:
-                                group_id = int(command[5:].strip())
-                                # 设置回调打印结果
-                                def _on_group_changed(gid, gname):
-                                    if gid < 0 or gname == "error":
-                                        print(f"加入房间失败: 服务器拒绝")
-                                    else:
-                                        print(f"已切换到房间: {gid}-{gname}")
-                                client.group_change_callback = _on_group_changed
-                                if client.join_group(group_id):
-                                    print(f"正在加入房间 {group_id}...")
-                                else:
-                                    print("发送请求失败")
-                            except ValueError:
-                                print("用法: join <房间ID> (纯数字)")
-                    elif command.startswith('loc'):
-                        if not client.is_connected:
-                            print("请先连接到服务器")
-                        else:
-                            parts = command.split()
-                            if len(parts) == 3:
-                                # loc <lat> <lng> 手动输入坐标
-                                try:
-                                    lat = float(parts[1])
-                                    lng = float(parts[2])
-                                    if client.send_location_message(lat, lng):
-                                        print(f"已发送位置: {lat},{lng}")
-                                    else:
-                                        print("发送失败")
-                                except ValueError:
-                                    print("用法: loc <纬度> <经度> (如: loc 31.8612 117.2839)")
-                            else:
-                                # loc 自动获取GPS
-                                print("正在获取位置...")
-                                lat, lng, source = client.get_current_location()
-                                if lat == 0.0 and lng == 0.0:
-                                    print("定位失败: 无法获取当前位置")
-                                else:
-                                    source_name = {"gps": "GPS", "ip": "IP定位"}.get(source, source)
-                                    print(f"当前位置: {lat:.6f},{lng:.6f} (来源: {source_name})")
-                                    if client.send_location_message(lat, lng):
-                                        print("位置消息已发送")
-                                    else:
-                                        print("发送失败")
-                    elif command == 'help':
-                        print("可用命令：")
-                        print("  connect - 连接到服务器")
-                        print("  disconnect - 断开连接")
-                        print("  status - 查看状态")
-                        print("  send <消息> - 发送文本消息")
-                        print("  rooms - 拉取房间列表")
-                        print("  join <房间ID> - 加入指定房间")
-                        print("  loc [lat lng] - 发送位置 (自动GPS或手动坐标)")
-                        print("  voice_start - 开始语音传输")
-                        print("  voice_stop - 停止语音传输")
-                        print("  help - 列出所有可用命令")
-                        print("  exit - 退出")
-                        print()
-                    elif command == '':
-                        continue
-                    else:
-                        print(f"未知命令: {command}")
-                        print(f"键入 help 来列出所有可用的命令")
-                except KeyboardInterrupt:
-                    print("\n使用 'exit' 命令退出")
-                except Exception as e:
-                    logger.error(f"命令执行错误: {e}")
-            
-            # 关闭客户端
-            client.close()
-            logger.info("78HAM客户端已关闭")
-    
+            _run_cli(args)
+
     except KeyboardInterrupt:
         logger.info("用户中断程序")
     except Exception as e:
         logger.error(f"程序运行错误: {e}")
         sys.exit(1)
+
+
+def _run_cli(args):
+    """命令行模式"""
+    from config.settings import Settings
+    from services.talk_service import TalkService
+    from services.room_service import RoomService
+    from services.location_service import LocationService
+    from services.aprs_service import AprsService
+
+    logger = logging.getLogger(__name__)
+
+    # 加载配置
+    settings = Settings.load(args.config)
+
+    # 创建服务
+    talk = TalkService(settings)
+    room = RoomService(settings, talk.udp_client)
+    location = LocationService(settings)
+    aprs = AprsService(settings, location)
+
+    # 注册回调
+    def _on_msg(msg):
+        if msg.get('type') == 'group_response':
+            room.handle_group_response(msg.get('data', b''))
+        else:
+            print(f"\n[{msg.get('from', '?')}] {msg.get('content', '')}")
+    talk.on_message = _on_msg
+    talk.on_voice_data = lambda pcm, info: print(
+        f"\r[voice] {info.get('from', '?')}", end='', flush=True)
+
+    room.on_group_list = lambda gl: print(
+        f"\n房间列表 ({len(gl)} 个): " +
+        ", ".join(f"{g['id']}-{g['name']}" for g in gl))
+    room.on_group_changed = lambda gid, name: print(
+        f"\n已切换到房间: {gid}-{name}")
+
+    print("\n78HAM 桌面客户端 (CLI)")
+    print(f"呼号: {settings.device.callsign}-{settings.device.ssid}")
+    print(f"服务器: {settings.server.host}:{settings.server.port}")
+    print(f"编码: {settings.audio.codec}")
+    print("\n命令: connect | disconnect | status | send <msg> | rooms | join <id> | loc | codec <g711|opus> | aprs | exit\n")
+
+    while True:
+        try:
+            cmd = input("> ").strip()
+            if not cmd:
+                continue
+
+            if cmd == 'exit':
+                break
+            elif cmd == 'connect':
+                if talk.start():
+                    print("连接成功")
+                    location.on_send_location = talk.send_location
+                    location.start_auto_report()
+                else:
+                    print("连接失败")
+            elif cmd == 'disconnect':
+                location.stop_auto_report()
+                talk.stop()
+                print("已断开")
+            elif cmd == 'status':
+                print(talk.get_status())
+            elif cmd.startswith('send '):
+                msg = cmd[5:]
+                if talk.send_text_message(msg):
+                    print(f"已发送: {msg}")
+                else:
+                    print("发送失败")
+            elif cmd == 'rooms':
+                room.request_group_list()
+            elif cmd.startswith('join '):
+                try:
+                    gid = int(cmd[5:].strip())
+                    room.join_group(gid)
+                except ValueError:
+                    print("用法: join <房间ID>")
+            elif cmd == 'loc':
+                lat, lng, src = location.get_location()
+                if lat != 0.0 or lng != 0.0:
+                    print(f"位置: {lat:.6f},{lng:.6f} (来源: {src})")
+                    talk.send_location(lat, lng)
+                else:
+                    print("定位失败")
+            elif cmd.startswith('codec '):
+                codec = cmd[6:].strip()
+                if talk.set_codec(codec):
+                    print(f"编码已切换: {codec}")
+                else:
+                    print("切换失败")
+            elif cmd == 'aprs':
+                if aprs.is_connected:
+                    aprs.stop()
+                    print("APRS 已停止")
+                else:
+                    if aprs.start():
+                        print("APRS 上报已启动 (60s 间隔)")
+                    else:
+                        print("APRS 启动失败")
+            else:
+                print(f"未知命令: {cmd}")
+
+        except KeyboardInterrupt:
+            print("\n使用 'exit' 退出")
+        except Exception as e:
+            logger.error(f"命令执行错误: {e}")
+
+    # 清理
+    aprs.stop()
+    location.stop_auto_report()
+    talk.stop()
+    print("78HAM 客户端已关闭")
+
 
 if __name__ == "__main__":
     main()
