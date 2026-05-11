@@ -1,6 +1,6 @@
 ﻿# 78HAM Desktop 桌面客户端
 
-78HAM  — 基于 Python 的跨平台业余无线电网络对讲应用，本项目适用于 Windows 桌面平台。
+78HAM  — 基于 Python 的跨平台业余无线电网络对讲应用
 
 基于项目：
 
