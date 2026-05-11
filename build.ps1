@@ -1,32 +1,40 @@
-# 78HAM Client One-Click Build Script
+# 78HAM Desktop Build Script
 # Usage: .\build.ps1
 
 $ErrorActionPreference = "Stop"
 
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$SpecFile = Join-Path $ProjectDir "78HAM_Client_Preview.spec"
-$ConfigFile = Join-Path $ProjectDir "config.yaml"
+$SpecFile = Join-Path $ProjectDir "78HAM.spec"
 $DistDir = Join-Path $ProjectDir "dist"
 $BuildDir = Join-Path $ProjectDir "build"
-$AppName = "78HAM_Client_Preview"
-$ZipName = "${AppName}_v1.4.3.zip"
+$AppName = "78HAM"
+$Version = "2.0.0"
+$ZipName = "${AppName}_v${Version}.zip"
 
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  78HAM Client Build Script" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  78HAM Desktop Build" -ForegroundColor Cyan
+Write-Host "  Version: $Version" -ForegroundColor Cyan
 Write-Host ""
 
-# 1. Activate conda env
-Write-Host "[1/5] Activating build environment..." -ForegroundColor Yellow
-conda activate nrllink_3.10
+# 1. Check Python
+Write-Host "[1/5] Checking environment..." -ForegroundColor Yellow
+$pyVer = python --version 2>&1
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "Error: cannot activate conda env nrllink_3.10" -ForegroundColor Red
+    Write-Host "  Error: Python not found" -ForegroundColor Red
     exit 1
 }
-Write-Host "  env: nrllink_3.10 $(python --version)" -ForegroundColor Green
+Write-Host "  $pyVer" -ForegroundColor Green
 
-# 2. Clean old outputs
-Write-Host "[2/5] Cleaning old build outputs..." -ForegroundColor Yellow
+# Check PyInstaller
+$piVer = pyinstaller --version 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  Error: PyInstaller not found (pip install pyinstaller)" -ForegroundColor Red
+    exit 1
+}
+Write-Host "  PyInstaller $piVer" -ForegroundColor Green
+
+# 2. Clean
+Write-Host "[2/5] Cleaning..." -ForegroundColor Yellow
 if (Test-Path $BuildDir) {
     Remove-Item -Recurse -Force $BuildDir -ErrorAction SilentlyContinue
 }
@@ -34,34 +42,69 @@ $distAppDir = Join-Path $DistDir $AppName
 if (Test-Path $distAppDir) {
     Remove-Item -Recurse -Force $distAppDir -ErrorAction SilentlyContinue
 }
-Write-Host "  clean done" -ForegroundColor Green
+Write-Host "  Done" -ForegroundColor Green
 
-# 3. PyInstaller build
-Write-Host "[3/5] Building with PyInstaller..." -ForegroundColor Yellow
+# 3. Build
+Write-Host "[3/5] Building..." -ForegroundColor Yellow
 Set-Location $ProjectDir
 pyinstaller --clean $SpecFile
-Write-Host "  build done" -ForegroundColor Green
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  Build failed!" -ForegroundColor Red
+    exit 1
+}
+Write-Host "  Done" -ForegroundColor Green
 
-# 4. Copy config.yaml
-Write-Host "[4/5] Copying config.yaml..." -ForegroundColor Yellow
-Copy-Item $ConfigFile $distAppDir -Force
-Write-Host "  config.yaml copied" -ForegroundColor Green
+# 4. Copy config template
+Write-Host "[4/5] Copying config template..." -ForegroundColor Yellow
+$configTemplate = @"
+# 78HAM 配置文件
+servers:
+  - name: "示例服务器"
+    host: ""
+    port: 60050
+    password: ""
 
-# 5. Create zip
-Write-Host "[5/5] Creating zip package..." -ForegroundColor Yellow
+device:
+  callsign: "N0CALL"
+  ssid: 1
+  dmr_id: "123456"
+  password: ""
+
+audio:
+  codec: "g711"
+  sample_rate: 8000
+
+network:
+  heartbeat_interval: 2
+  buffer_size: 4096
+
+location:
+  auto_report: true
+  report_interval: 120
+  default_lat: 0.0
+  default_lng: 0.0
+"@
+$configTemplate | Out-File -FilePath (Join-Path $distAppDir "config.yaml") -Encoding utf8
+Write-Host "  Done" -ForegroundColor Green
+
+# 5. Package
+Write-Host "[5/5] Packaging..." -ForegroundColor Yellow
+$zipPath = Join-Path $DistDir $ZipName
+if (Test-Path $zipPath) {
+    Remove-Item $zipPath -Force
+}
 Set-Location $DistDir
 Compress-Archive -Path $AppName -DestinationPath $ZipName -Force
-$zipSize = [math]::Round((Get-Item $ZipName).Length / 1MB, 1)
+
 $appSize = [math]::Round((Get-ChildItem $AppName -Recurse -File | Measure-Object -Property Length -Sum).Sum / 1MB, 1)
+$zipSize = [math]::Round((Get-Item $ZipName).Length / 1MB, 1)
 
 Write-Host ""
-Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  Build Complete!" -ForegroundColor Green
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  Uncompressed : ${appSize} MB" -ForegroundColor White
-Write-Host "  Zip          : ${zipSize} MB" -ForegroundColor White
-Write-Host "  Output       : dist\$AppName\" -ForegroundColor White
-Write-Host "               : dist\$ZipName" -ForegroundColor White
-Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  App size : ${appSize} MB" -ForegroundColor White
+Write-Host "  Zip size : ${zipSize} MB" -ForegroundColor White
+Write-Host "  Output   : dist\$AppName\" -ForegroundColor White
+Write-Host "  Package  : dist\$ZipName" -ForegroundColor White
+Write-Host ""
 
 Set-Location $ProjectDir
