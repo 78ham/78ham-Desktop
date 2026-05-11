@@ -18,20 +18,44 @@ Write-Host ""
 
 # 1. Check Python
 Write-Host "[1/5] Checking environment..." -ForegroundColor Yellow
-$pyVer = python --version 2>&1
-if ($LASTEXITCODE -ne 0) {
+
+# 自动查找 Python（优先 PATH，其次常见安装路径）
+$PythonExe = $null
+$PythonPaths = @(
+    "python",
+    "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+    "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+    "$env:LOCALAPPDATA\Programs\Python\Python310\python.exe",
+    "C:\Python312\python.exe",
+    "C:\Python311\python.exe",
+    "C:\Python310\python.exe"
+)
+foreach ($p in $PythonPaths) {
+    try {
+        $ver = & $p --version 2>&1
+        if ($ver -match "Python \d") {
+            $PythonExe = $p
+            $pyVer = $ver
+            break
+        }
+    } catch {}
+}
+if (-not $PythonExe) {
     Write-Host "  Error: Python not found" -ForegroundColor Red
+    Write-Host "  Searched: PATH, AppData\Local\Programs\Python\" -ForegroundColor Red
     exit 1
 }
-Write-Host "  $pyVer" -ForegroundColor Green
+Write-Host "  $pyVer ($PythonExe)" -ForegroundColor Green
 
 # Check PyInstaller
-$piVer = pyinstaller --version 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  Error: PyInstaller not found (pip install pyinstaller)" -ForegroundColor Red
+try {
+    $piVer = & $PythonExe -c "import PyInstaller; print(PyInstaller.__version__)" 2>&1
+    Write-Host "  PyInstaller $piVer" -ForegroundColor Green
+} catch {
+    Write-Host "  Error: PyInstaller not found" -ForegroundColor Red
+    Write-Host "  Run: $PythonExe -m pip install pyinstaller" -ForegroundColor Red
     exit 1
 }
-Write-Host "  PyInstaller $piVer" -ForegroundColor Green
 
 # 2. Clean
 Write-Host "[2/5] Cleaning..." -ForegroundColor Yellow
@@ -47,7 +71,7 @@ Write-Host "  Done" -ForegroundColor Green
 # 3. Build
 Write-Host "[3/5] Building..." -ForegroundColor Yellow
 Set-Location $ProjectDir
-pyinstaller --clean $SpecFile
+& $PythonExe -m PyInstaller --clean $SpecFile
 if ($LASTEXITCODE -ne 0) {
     Write-Host "  Build failed!" -ForegroundColor Red
     exit 1
@@ -84,7 +108,8 @@ location:
   default_lat: 0.0
   default_lng: 0.0
 "@
-$configTemplate | Out-File -FilePath (Join-Path $distAppDir "config.yaml") -Encoding utf8
+$configPath = Join-Path $distAppDir "config.yaml"
+[System.IO.File]::WriteAllText($configPath, $configTemplate, [System.Text.UTF8Encoding]::new($false))
 Write-Host "  Done" -ForegroundColor Green
 
 # 5. Package
