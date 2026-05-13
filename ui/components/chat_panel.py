@@ -1,12 +1,13 @@
 """
 聊天面板组件
 
-显示文本消息、系统通知、位置消息等。
-支持发送文本和位置。
+右侧面板分为两部分：
+- 通联日志（上方 2/3）：文本消息、位置消息等通联记录
+- 软件日志（下方 1/3）：系统通知、连接状态等软件事件
 """
 import time
 import customtkinter as ctk
-from typing import Optional, Callable, List
+from typing import Optional, Callable
 
 from ui.theme import Colors, Fonts, Spacing, Sizes
 
@@ -14,11 +15,16 @@ from ui.theme import Colors, Fonts, Spacing, Sizes
 class ChatPanel(ctk.CTkFrame):
     """聊天/消息面板
 
-    功能：
-    - 显示接收到的文本消息
-    - 显示系统通知（连接/断开/房间切换等）
-    - 发送文本消息输入框
-    - 发送位置按钮
+    布局：
+    +---------------------------+
+    | 通联日志 (2/3)            |
+    | [文本/位置/语音消息]      |
+    +---------------------------+
+    | 软件日志 (1/3)            |
+    | [系统通知/连接状态]       |
+    +---------------------------+
+    | [输入框] [发送] [位置]    |
+    +---------------------------+
     """
 
     def __init__(self, master,
@@ -29,27 +35,66 @@ class ChatPanel(ctk.CTkFrame):
 
         self._on_send_text = on_send_text
         self._on_send_location = on_send_location
-        self._messages: List[dict] = []
 
         self._build_ui()
 
     def _build_ui(self):
         """构建 UI"""
-        # 消息显示区
-        self._textbox = ctk.CTkTextbox(
-            self,
+        # 使用 grid 实现 2:1 比例
+        self.grid_rowconfigure(0, weight=2)  # 通联日志区
+        self.grid_rowconfigure(1, weight=1)  # 软件日志区
+        self.grid_rowconfigure(2, weight=0)  # 输入区
+        self.grid_columnconfigure(0, weight=1)
+
+        # ---- 通联日志区 ----
+        comm_frame = ctk.CTkFrame(self)
+        comm_frame.grid(row=0, column=0, sticky="nsew",
+                        padx=Spacing.PAD_XS, pady=(Spacing.PAD_XS, 0))
+        comm_frame.grid_rowconfigure(1, weight=1)
+        comm_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            comm_frame, text="通联日志",
+            font=(Fonts.FAMILY_UI, Fonts.SIZE_SMALL, "bold"),
+            text_color=Colors.TEXT_SECONDARY,
+        ).grid(row=0, column=0, sticky="w", padx=4, pady=(2, 0))
+
+        self._comm_log = ctk.CTkTextbox(
+            comm_frame,
             font=(Fonts.FAMILY_MONO, Fonts.SIZE_BODY),
             state="disabled",
             wrap="word",
         )
-        self._textbox.pack(fill="both", expand=True, padx=Spacing.PAD_XS,
-                           pady=(Spacing.PAD_XS, 0))
+        self._comm_log.grid(row=1, column=0, sticky="nsew",
+                            padx=Spacing.PAD_XS, pady=(0, Spacing.PAD_XS))
 
-        # 输入区域
+        # ---- 软件日志区 ----
+        sys_frame = ctk.CTkFrame(self)
+        sys_frame.grid(row=1, column=0, sticky="nsew",
+                       padx=Spacing.PAD_XS, pady=Spacing.PAD_XS)
+        sys_frame.grid_rowconfigure(1, weight=1)
+        sys_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            sys_frame, text="软件日志",
+            font=(Fonts.FAMILY_UI, Fonts.SIZE_SMALL, "bold"),
+            text_color=Colors.TEXT_SECONDARY,
+        ).grid(row=0, column=0, sticky="w", padx=4, pady=(2, 0))
+
+        self._sys_log = ctk.CTkTextbox(
+            sys_frame,
+            font=(Fonts.FAMILY_MONO, Fonts.SIZE_BODY),
+            state="disabled",
+            wrap="word",
+        )
+        self._sys_log.grid(row=1, column=0, sticky="nsew",
+                           padx=Spacing.PAD_XS, pady=(0, Spacing.PAD_XS))
+
+        # ---- 输入区域 ----
         input_frame = ctk.CTkFrame(self, fg_color="transparent")
-        input_frame.pack(fill="x", padx=Spacing.PAD_XS, pady=Spacing.PAD_XS)
+        input_frame.grid(row=2, column=0, sticky="ew",
+                         padx=Spacing.PAD_XS, pady=Spacing.PAD_XS)
 
-        # 文本输入框
         self._input_entry = ctk.CTkEntry(
             input_frame,
             placeholder_text="输入消息...",
@@ -59,7 +104,6 @@ class ChatPanel(ctk.CTkFrame):
                                padx=(0, Spacing.PAD_SM))
         self._input_entry.bind("<Return>", self._on_enter_pressed)
 
-        # 发送按钮
         self._send_btn = ctk.CTkButton(
             input_frame, text="发送", width=60,
             font=(Fonts.FAMILY_UI, Fonts.SIZE_BODY),
@@ -67,7 +111,6 @@ class ChatPanel(ctk.CTkFrame):
         )
         self._send_btn.pack(side="left", padx=(0, Spacing.PAD_XS))
 
-        # 位置按钮
         self._loc_btn = ctk.CTkButton(
             input_frame, text="位置", width=50,
             font=(Fonts.FAMILY_UI, Fonts.SIZE_SMALL),
@@ -97,51 +140,72 @@ class ChatPanel(ctk.CTkFrame):
         if self._on_send_location:
             self._on_send_location()
 
-    # ==================== 公开接口 ====================
+    # ==================== 通联日志 ====================
 
-    def add_message(self, from_call: str, content: str,
-                    msg_type: str = "text"):
-        """添加一条消息
+    @staticmethod
+    def _format_sender(from_call: str, ssid: int = 0,
+                       dmr_id: str = "", is_local: bool = False) -> str:
+        """格式化发送者信息: 呼号-SSID [DMRID] (我)"""
+        parts = []
+        if from_call:
+            if ssid:
+                parts.append(f"{from_call}-{ssid}")
+            else:
+                parts.append(from_call)
+        if dmr_id:
+            parts.append(f"[{dmr_id}]")
+        if is_local:
+            parts.append("(我)")
+        return " ".join(parts) if parts else "未知"
+
+    def add_comm_message(self, from_call: str, content: str,
+                         msg_type: str = "text",
+                         ssid: int = 0, dmr_id: str = "",
+                         is_local: bool = False):
+        """添加通联日志消息
 
         Args:
             from_call: 发送者呼号
             content: 消息内容
-            msg_type: "text" / "location" / "system"
+            msg_type: "text" / "location"
+            ssid: 设备 SSID
+            dmr_id: 设备 DMRID
+            is_local: 是否为本机发送
         """
         timestamp = time.strftime("%H:%M:%S")
-        self._messages.append({
-            "from": from_call,
-            "content": content,
-            "type": msg_type,
-            "time": timestamp,
-        })
+        sender = self._format_sender(from_call, ssid, dmr_id, is_local)
 
-        # 限制消息数量
-        if len(self._messages) > Sizes.CHAT_MAX_MESSAGES:
-            self._messages = self._messages[-Sizes.CHAT_MAX_MESSAGES:]
-
-        # 显示
-        self._textbox.configure(state="normal")
-        if msg_type == "system":
-            line = f"[{timestamp}] *** {content}\n"
-        elif msg_type == "location":
-            line = f"[{timestamp}] [{from_call}] 📍 {content}\n"
+        if msg_type == "location":
+            line = f"[{timestamp}] {sender}  📍 {content}\n"
         else:
-            line = f"[{timestamp}] [{from_call}] {content}\n"
-        self._textbox.insert("end", line)
-        self._textbox.configure(state="disabled")
-        self._textbox.see("end")
+            line = f"[{timestamp}] {sender}  {content}\n"
+
+        self._append_text(self._comm_log, line)
+
+    # ==================== 软件日志 ====================
 
     def add_system_message(self, content: str):
-        """添加系统消息"""
-        self.add_message("系统", content, msg_type="system")
+        """添加软件日志消息"""
+        timestamp = time.strftime("%H:%M:%S")
+        line = f"[{timestamp}] {content}\n"
+        self._append_text(self._sys_log, line)
+
+    # ==================== 公共方法 ====================
+
+    @staticmethod
+    def _append_text(textbox: ctk.CTkTextbox, line: str):
+        """向文本框追加一行并滚动到底部"""
+        textbox.configure(state="normal")
+        textbox.insert("end", line)
+        textbox.configure(state="disabled")
+        textbox.see("end")
 
     def clear(self):
-        """清空消息"""
-        self._messages.clear()
-        self._textbox.configure(state="normal")
-        self._textbox.delete("1.0", "end")
-        self._textbox.configure(state="disabled")
+        """清空所有日志"""
+        for tb in (self._comm_log, self._sys_log):
+            tb.configure(state="normal")
+            tb.delete("1.0", "end")
+            tb.configure(state="disabled")
 
     def set_enabled(self, enabled: bool):
         """启用/禁用输入"""

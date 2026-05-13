@@ -222,21 +222,31 @@ class ConfigDialog(ctk.CTkToplevel):
             messagebox.showerror("错误", "请至少添加一个服务器", parent=self)
             return
 
+        try:
+            ssid = int(self._ssid_var.get() or 1)
+            if not (0 <= ssid <= 15):
+                messagebox.showerror("错误", "SSID 范围: 0-15", parent=self)
+                return
+            sample_rate = int(self._sample_rate_var.get() or 8000)
+            heartbeat_interval = int(self._heartbeat_var.get() or 2)
+        except ValueError:
+            messagebox.showerror("错误", "数值字段必须为整数", parent=self)
+            return
+
         config_data = {
             'device': {
                 'callsign': callsign,
-                'ssid': int(self._ssid_var.get() or 1),
+                'ssid': ssid,
                 'dmr_id': self._dmrid_var.get(),
                 'password': self._password_var.get(),
             },
             'servers': self._server_entries,
             'current_server': 0,
             'audio': {
-                'sample_rate': int(self._sample_rate_var.get() or 8000),
-                'chunk_size': int(self._chunk_var.get() or 320),
+                'sample_rate': sample_rate,
             },
             'network': {
-                'heartbeat_interval': int(self._heartbeat_var.get() or 2),
+                'heartbeat_interval': heartbeat_interval,
                 'buffer_size': int(self._buffer_var.get() or 4096),
             },
         }

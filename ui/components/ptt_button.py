@@ -52,6 +52,7 @@ class PttButton(ctk.CTkFrame):
         # 绑定鼠标事件
         self._button.bind("<ButtonPress-1>", self._on_mouse_press)
         self._button.bind("<ButtonRelease-1>", self._on_mouse_release)
+        self._button.bind("<Leave>", self._on_mouse_leave)
 
         # 状态提示
         self._hint_label = ctk.CTkLabel(
@@ -74,6 +75,11 @@ class PttButton(ctk.CTkFrame):
         if not self._is_transmitting:
             return
         self._stop_transmit()
+
+    def _on_mouse_leave(self, event=None):
+        """鼠标离开按钮区域，自动停止发射防止卡住"""
+        if self._is_transmitting:
+            self._stop_transmit()
 
     def _start_transmit(self):
         """开始发射"""
@@ -128,6 +134,16 @@ class PttButton(ctk.CTkFrame):
     def set_hotkey_hint(self, key: str):
         """更新热键提示"""
         self._hint_label.configure(text=f"热键: {key.upper()}")
+
+    def set_transmitting(self):
+        """外部设置发射状态（热键触发时使用）"""
+        if not self._is_transmitting:
+            self._start_transmit()
+
+    def set_idle(self):
+        """外部设置空闲状态（热键触发时使用）"""
+        if self._is_transmitting:
+            self._stop_transmit()
 
     @property
     def is_transmitting(self) -> bool:

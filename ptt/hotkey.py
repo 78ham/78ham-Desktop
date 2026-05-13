@@ -31,7 +31,8 @@ class PttController:
         self._on_release = on_release
         self._registered = False
         self._hotkey: Optional[str] = None
-        self._hook = None
+        self._press_hook = None
+        self._release_hook = None
 
     def register(self, key: str = "f5") -> bool:
         """注册全局热键
@@ -52,9 +53,9 @@ class PttController:
             # 先取消旧注册
             self.unregister()
 
-            # 注册按下和松开事件
-            keyboard.on_press_key(key, lambda _: self._on_press(), suppress=False)
-            keyboard.on_release_key(key, lambda _: self._on_release(), suppress=False)
+            # 注册按下和松开事件，保存句柄
+            self._press_hook = keyboard.on_press_key(key, lambda _: self._on_press(), suppress=False)
+            self._release_hook = keyboard.on_release_key(key, lambda _: self._on_release(), suppress=False)
 
             self._registered = True
             self._hotkey = key
@@ -63,6 +64,9 @@ class PttController:
 
         except ImportError:
             logger.warning("keyboard 库未安装，无法注册全局热键 (pip install keyboard)")
+            return False
+        except PermissionError:
+            logger.error("注册热键失败：需要管理员权限。请以管理员身份运行程序。")
             return False
         except Exception as e:
             logger.error(f"注册热键失败: {e}")
@@ -75,8 +79,13 @@ class PttController:
 
         try:
             import keyboard  # type: ignore
-            if self._hotkey:
-                keyboard.unhook_all()
+            # 只取消本应用注册的钩子，不影响其他钩子
+            if self._press_hook is not None:
+                keyboard.unhook(self._press_hook)
+                self._press_hook = None
+            if self._release_hook is not None:
+                keyboard.unhook(self._release_hook)
+                self._release_hook = None
             self._registered = False
             self._hotkey = None
             logger.info("PTT 热键已取消注册")

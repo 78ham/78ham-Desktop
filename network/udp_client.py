@@ -45,7 +45,8 @@ class UdpClient:
         self._receive_thread: Optional[threading.Thread] = None
         self._heartbeat_thread: Optional[threading.Thread] = None
 
-        # 统计
+        # 统计（线程安全）
+        self._stats_lock = threading.Lock()
         self.packets_sent = 0
         self.packets_received = 0
 
@@ -69,10 +70,13 @@ class UdpClient:
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._socket.setblocking(False)
 
+            # 校验 buffer_size 合理性
+            buf_size = min(self.settings.network.buffer_size, 65535)
+
             try:
                 self._socket.setsockopt(
                     socket.SOL_SOCKET, socket.SO_RCVBUF,
-                    self.settings.network.buffer_size
+                    min(self.settings.network.buffer_size, 65535)
                 )
             except OSError:
                 logger.warning("设置接收缓冲区失败，使用默认配置")
@@ -116,7 +120,7 @@ class UdpClient:
     def send_packet(self, packet: NRLPacket) -> bool:
         """发送数据包"""
         try:
-            if not self._socket or not self.connection_mgr.is_connected:
+            if not self.connection_mgr.is_connected:
                 return False
 
             data = PacketFactory.encode_packet(packet)
@@ -124,12 +128,15 @@ class UdpClient:
                 return False
 
             with self._socket_lock:
+                if not self._socket:
+                    return False
                 self._socket.sendto(
                     data,
                     (self.settings.server.host, self.settings.server.port)
                 )
 
-            self.packets_sent += 1
+            with self._stats_lock:
+                self.packets_sent += 1
             return True
 
         except BlockingIOError:
@@ -145,14 +152,15 @@ class UdpClient:
     def send_raw(self, data: bytes) -> bool:
         """发送原始字节数据"""
         try:
-            if not self._socket:
-                return False
             with self._socket_lock:
+                if not self._socket:
+                    return False
                 self._socket.sendto(
                     data,
                     (self.settings.server.host, self.settings.server.port)
                 )
-            self.packets_sent += 1
+            with self._stats_lock:
+                self.packets_sent += 1
             return True
         except (BlockingIOError, socket.error):
             return False
@@ -169,10 +177,13 @@ class UdpClient:
         )
         data = PacketFactory.encode_packet(packet)
         try:
-            self._socket.sendto(
-                data,
-                (self.settings.server.host, self.settings.server.port)
-            )
+            with self._socket_lock:
+                if not self._socket:
+                    return
+                self._socket.sendto(
+                    data,
+                    (self.settings.server.host, self.settings.server.port)
+                )
             logger.info(f"注册包已发送到 {self.settings.server.host}:{self.settings.server.port}")
         except BlockingIOError:
             logger.warning("注册包发送缓冲区满，将在心跳中重试")
@@ -206,7 +217,8 @@ class UdpClient:
 
                 # 更新连接状态
                 self.connection_mgr.mark_packet_received()
-                self.packets_received += 1
+                with self._stats_lock:
+                    self.packets_received += 1
                 consecutive_errors = 0
 
                 # 通知上层
@@ -289,7 +301,7 @@ class UdpClient:
             try:
                 self._socket.setsockopt(
                     socket.SOL_SOCKET, socket.SO_RCVBUF,
-                    self.settings.network.buffer_size
+                    min(self.settings.network.buffer_size, 65535)
                 )
             except OSError:
                 pass
@@ -306,7 +318,7 @@ class UdpClient:
         self._running = False
         for t in (self._receive_thread, self._heartbeat_thread):
             if t and t.is_alive():
-                t.join(timeout=1.0)
+                t.join(timeout=3.0)
         self._receive_thread = None
         self._heartbeat_thread = None
 

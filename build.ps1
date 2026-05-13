@@ -8,7 +8,7 @@ $SpecFile = Join-Path $ProjectDir "78HAM.spec"
 $DistDir = Join-Path $ProjectDir "dist"
 $BuildDir = Join-Path $ProjectDir "build"
 $AppName = "78HAM"
-$Version = "2.0.0"
+$Version = "2.1.0"
 $ZipName = "${AppName}_v${Version}.zip"
 
 Write-Host ""
@@ -58,7 +58,7 @@ try {
 }
 
 # 2. Clean
-Write-Host "[2/5] Cleaning..." -ForegroundColor Yellow
+Write-Host "[2/4] Cleaning..." -ForegroundColor Yellow
 if (Test-Path $BuildDir) {
     Remove-Item -Recurse -Force $BuildDir -ErrorAction SilentlyContinue
 }
@@ -69,7 +69,7 @@ if (Test-Path $distAppDir) {
 Write-Host "  Done" -ForegroundColor Green
 
 # 3. Build
-Write-Host "[3/5] Building..." -ForegroundColor Yellow
+Write-Host "[3/4] Building..." -ForegroundColor Yellow
 Set-Location $ProjectDir
 & $PythonExe -m PyInstaller --clean $SpecFile
 if ($LASTEXITCODE -ne 0) {
@@ -114,6 +114,7 @@ Write-Host "  Done" -ForegroundColor Green
 
 # 5. Package
 Write-Host "[5/5] Packaging..." -ForegroundColor Yellow
+Start-Sleep -Seconds 2  # 等待 PyInstaller 释放文件锁
 $zipPath = Join-Path $DistDir $ZipName
 if (Test-Path $zipPath) {
     Remove-Item $zipPath -Force

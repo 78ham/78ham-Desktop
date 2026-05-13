@@ -128,6 +128,8 @@ class PacketFactory:
 
         data[0] = 1 (切换组指令), data[1:5] = group_id (big-endian uint32)
         """
+        if not (0 <= group_id <= 0xFFFFFFFF):
+            raise ValueError(f"group_id 超出范围: {group_id}，有效范围 0-4294967295")
         header = self._make_header(
             callsign, ssid, dmr_id,
             packet_type=PacketType.JOIN_GROUP,

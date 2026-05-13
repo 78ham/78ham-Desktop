@@ -24,7 +24,7 @@ class LocationService:
 
     def __init__(self, settings: Settings):
         self.settings = settings
-        self._running = False
+        self._running = threading.Event()
         self._report_thread: Optional[threading.Thread] = None
 
         # 回调：发送位置消息
@@ -57,7 +57,10 @@ class LocationService:
         """启动自动位置上报"""
         if not self.settings.location.auto_report:
             return
-        self._running = True
+        # 防止重复启动
+        if self._report_thread and self._report_thread.is_alive():
+            return
+        self._running.set()
         self._report_thread = threading.Thread(
             target=self._report_loop, daemon=True, name="loc-report")
         self._report_thread.start()
@@ -65,34 +68,40 @@ class LocationService:
 
     def stop_auto_report(self):
         """停止自动位置上报"""
-        self._running = False
+        self._running.clear()
         if self._report_thread and self._report_thread.is_alive():
-            self._report_thread.join(timeout=1.0)
+            self._report_thread.join(timeout=3.0)
 
     def _report_loop(self):
         """自动上报循环"""
         # 连接后立即上报一次
         self._do_report()
 
-        while self._running:
+        while self._running.is_set():
             # 拆分 sleep 以便快速退出
             poll_interval = 0.5
-            ticks = int(self.settings.location.report_interval / poll_interval)
+            ticks = max(1, int(self.settings.location.report_interval / poll_interval))
             for _ in range(ticks):
-                if not self._running:
+                if not self._running.is_set():
                     return
                 time.sleep(poll_interval)
 
-            if self._running:
+            if self._running.is_set():
                 self._do_report()
 
     def _do_report(self):
         """执行一次位置上报"""
         try:
             lat, lng, source = self.get_location()
+            # 实时定位失败时，使用 config 中的指定位置
             if lat == 0.0 and lng == 0.0:
-                logger.warning("自动上报位置失败：无可用位置")
-                return
+                cfg_lat = self.settings.location.default_lat
+                cfg_lng = self.settings.location.default_lng
+                if cfg_lat != 0.0 or cfg_lng != 0.0:
+                    lat, lng, source = cfg_lat, cfg_lng, "config"
+                else:
+                    logger.warning("自动上报位置失败：无可用位置")
+                    return
             if self.on_send_location:
                 if self.on_send_location(lat, lng):
                     logger.info(f"自动上报位置: {lat:.6f},{lng:.6f} (来源: {source})")
@@ -130,10 +139,15 @@ class LocationService:
         """尝试通过 IP 地址获取大致位置"""
         try:
             import requests  # type: ignore
-            resp = requests.get("http://ip-api.com/json/?fields=lat,lon,status", timeout=5)
+            import math
+            resp = requests.get("https://ip-api.com/json/?fields=lat,lon,status", timeout=5)
             data = resp.json()
             if data.get("status") == "success":
-                return (float(data["lat"]), float(data["lon"]))
+                lat = float(data["lat"])
+                lon = float(data["lon"])
+                # 验证坐标有效性和合理范围
+                if math.isfinite(lat) and math.isfinite(lon) and -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0:
+                    return (lat, lon)
         except ImportError:
             logger.debug("requests 未安装，跳过 IP 定位")
         except Exception as e:

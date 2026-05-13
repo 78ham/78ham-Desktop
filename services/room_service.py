@@ -30,6 +30,7 @@ class RoomService:
         self.settings = settings
         self.udp_client = udp_client
         self._packet_factory = PacketFactory()
+        self._lock = threading.Lock()
 
         # 房间状态
         self.current_group_id: int = 0
@@ -48,6 +49,9 @@ class RoomService:
 
     def request_group_list(self) -> bool:
         """请求服务器房间列表"""
+        with self._lock:
+            if self._list_pending:
+                return False  # 已有请求待处理，去重
         if not self.udp_client.is_running:
             logger.warning("未连接，无法请求房间列表")
             return False
@@ -59,7 +63,8 @@ class RoomService:
             self.settings.device.model,
         )
         if self.udp_client.send_packet(packet):
-            self._list_pending = True
+            with self._lock:
+                self._list_pending = True
             logger.info("已发送房间列表请求")
             return True
         return False
@@ -78,7 +83,8 @@ class RoomService:
             self.settings.device.model,
         )
         if self.udp_client.send_packet(packet):
-            self._join_pending = True
+            with self._lock:
+                self._join_pending = True
             logger.info(f"已发送加入房间请求: {group_id}")
             return True
         return False
@@ -93,25 +99,33 @@ class RoomService:
 
         subtype = data[0]
 
-        if subtype == 2 and self._list_pending:
-            # 房间列表响应
-            self._list_pending = False
-            self.group_list = PacketParser.parse_group_list_response(data)
-            logger.info(f"收到房间列表: 共 {len(self.group_list)} 个房间")
-            if self.on_group_list:
-                self.on_group_list(self.group_list)
-
-        elif subtype == 1 and self._join_pending:
-            # 加入房间响应
-            self._join_pending = False
-            group_id, group_name = PacketParser.parse_join_group_response(data)
-            if group_name == "error":
-                logger.warning(f"加入房间 {group_id} 失败")
-                if self.on_group_changed:
-                    self.on_group_changed(-1, "error")
+        with self._lock:
+            if subtype == 2 and self._list_pending:
+                # 房间列表响应
+                self._list_pending = False
+                self.group_list = PacketParser.parse_group_list_response(data)
+                logger.info(f"收到房间列表: 共 {len(self.group_list)} 个房间")
+                callback = self.on_group_list
+                group_list = self.group_list
+            elif subtype == 1 and self._join_pending:
+                # 加入房间响应
+                self._join_pending = False
+                group_id, group_name = PacketParser.parse_join_group_response(data)
+                if group_name == "error":
+                    logger.warning(f"加入房间 {group_id} 失败")
+                    callback = self.on_group_changed
+                    args = (-1, "error")
+                else:
+                    self.current_group_id = group_id
+                    self.current_group_name = group_name
+                    logger.info(f"已切换到房间: {group_id}-{group_name}")
+                    callback = self.on_group_changed
+                    args = (group_id, group_name)
             else:
-                self.current_group_id = group_id
-                self.current_group_name = group_name
-                logger.info(f"已切换到房间: {group_id}-{group_name}")
-                if self.on_group_changed:
-                    self.on_group_changed(group_id, group_name)
+                return
+
+        # 在锁外调用回调
+        if subtype == 2 and callback:
+            callback(group_list)
+        elif subtype == 1 and callback:
+            callback(*args)

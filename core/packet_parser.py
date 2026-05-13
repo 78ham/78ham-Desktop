@@ -41,6 +41,11 @@ class PacketParser:
             # 解析长度
             length = struct.unpack(">H", data[4:6])[0]
 
+            # 长度合理性校验：不超过 UDP 包最大值 65535
+            if length > 65535:
+                logger.debug(f"数据包长度字段异常: {length}")
+                return None
+
             # 检查数据完整性
             if len(data) < length and length > HEADER_SIZE:
                 logger.debug(f"数据包不完整: 期望 {length} 字节，实际 {len(data)} 字节")
@@ -79,14 +84,20 @@ class PacketParser:
             # 兼容新旧版服务端：
             # - 新版: Length 字段正确，严格按 Length 截取
             # - 旧版: Length 可能仅填头部长度(48)，但 UDP 包中仍携带语音数据
+            # - Type=7 响应: 服务端追加 CSV 数据但未更新 Length 字段
+            actual_len = len(data)
             if length > HEADER_SIZE:
-                payload = data[HEADER_SIZE:length]
-            elif (header.packet_type in (PacketType.VOICE, PacketType.OPUS, PacketType.SERVER_VOICE)
-                  and len(data) > HEADER_SIZE):
-                # 兼容旧版服务端
+                if actual_len > length:
+                    # 实际数据比 Length 字段长（如 Type=7 房间列表响应），
+                    # 服务端追加了数据但未更新 Length，以实际接收长度为准
+                    payload = data[HEADER_SIZE:actual_len]
+                else:
+                    payload = data[HEADER_SIZE:length]
+            elif actual_len > HEADER_SIZE:
+                # 兼容旧版服务端或 Length 字段不准确的情况
                 logger.debug(
-                    f"旧版语音包兼容: Type={header.packet_type}, "
-                    f"Length={length}, 实际数据={len(data) - HEADER_SIZE}字节")
+                    f"旧版/兼容包: Type={header.packet_type}, "
+                    f"Length={length}, 实际数据={actual_len - HEADER_SIZE}字节")
                 payload = data[HEADER_SIZE:]
             else:
                 payload = b""

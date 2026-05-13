@@ -15,13 +15,22 @@ sys.path.insert(0, current_dir)
 
 def setup_logging(level=logging.INFO):
     """设置日志系统"""
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    log_path = os.path.join(base_dir, '78ham.log')
+
+    handlers = [logging.FileHandler(log_path, encoding='utf-8')]
+
+    # PyInstaller windowed 模式下 stdout 不可用，仅在控制台可用时添加
+    if sys.stdout and hasattr(sys.stdout, 'write'):
+        handlers.append(logging.StreamHandler(sys.stdout))
+
     logging.basicConfig(
         level=level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler('78ham.log', encoding='utf-8'),
-        ]
+        handlers=handlers,
     )
 
 
@@ -68,6 +77,10 @@ def main():
             except ImportError as e:
                 logger.warning(f"GUI 启动失败 ({e})，回退到命令行模式")
                 args.no_gui = True
+            except Exception as e:
+                logger.error(f"GUI 启动异常: {e}", exc_info=True)
+                _show_error(f"启动失败: {e}")
+                sys.exit(1)
 
         # 命令行模式
         if args.no_gui:
@@ -76,8 +89,22 @@ def main():
     except KeyboardInterrupt:
         logger.info("用户中断程序")
     except Exception as e:
-        logger.error(f"程序运行错误: {e}")
+        logger.error(f"程序运行错误: {e}", exc_info=True)
+        _show_error(f"运行错误: {e}")
         sys.exit(1)
+
+
+def _show_error(msg: str):
+    """显示错误对话框（windowed 模式下的兜底提示）"""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("78HAM 错误", msg)
+        root.destroy()
+    except Exception:
+        pass
 
 
 def _run_cli(args):
@@ -86,7 +113,6 @@ def _run_cli(args):
     from services.talk_service import TalkService
     from services.room_service import RoomService
     from services.location_service import LocationService
-    from services.aprs_service import AprsService
 
     logger = logging.getLogger(__name__)
 
@@ -97,7 +123,6 @@ def _run_cli(args):
     talk = TalkService(settings)
     room = RoomService(settings, talk.udp_client)
     location = LocationService(settings)
-    aprs = AprsService(settings, location)
 
     # 注册回调
     def _on_msg(msg):
@@ -119,7 +144,7 @@ def _run_cli(args):
     print(f"呼号: {settings.device.callsign}-{settings.device.ssid}")
     print(f"服务器: {settings.server.host}:{settings.server.port}")
     print(f"编码: {settings.audio.codec}")
-    print("\n命令: connect | disconnect | status | send <msg> | rooms | join <id> | loc | codec <g711|opus> | aprs | exit\n")
+    print("\n命令: connect | disconnect | status | send <msg> | rooms | join <id> | loc | codec <g711|opus> | exit\n")
 
     while True:
         try:
@@ -169,15 +194,6 @@ def _run_cli(args):
                     print(f"编码已切换: {codec}")
                 else:
                     print("切换失败")
-            elif cmd == 'aprs':
-                if aprs.is_connected:
-                    aprs.stop()
-                    print("APRS 已停止")
-                else:
-                    if aprs.start():
-                        print("APRS 上报已启动 (60s 间隔)")
-                    else:
-                        print("APRS 启动失败")
             else:
                 print(f"未知命令: {cmd}")
 
@@ -187,7 +203,6 @@ def _run_cli(args):
             logger.error(f"命令执行错误: {e}")
 
     # 清理
-    aprs.stop()
     location.stop_auto_report()
     talk.stop()
     print("78HAM 客户端已关闭")

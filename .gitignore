@@ -1,12 +1,51 @@
-/nrl_client.log
-/78ham.log
-/assets/
+# Logs
+*.log
+78ham.log
+nrl_client.log
+
+# Python
 __pycache__/
-*.pyc
-/config.yaml
-/config2.yaml
-/test_*.py
-/validate_*.py
-/build/
-/dist/
-/*.egg-info/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Config files (contain credentials)
+config.yaml
+config2.yaml
+config/config.yaml
+
+# Test files
+test_*.py
+validate_*.py
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Audio assets
+/assets/
+*.wav
+*.pcm
+*.opus
+
+# PyInstaller
+*.manifest
+*.spec.bak

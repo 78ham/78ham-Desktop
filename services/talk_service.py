@@ -54,14 +54,16 @@ class TalkService:
         # 包工厂
         self._packet_factory = PacketFactory()
 
-        # PTT 状态
+        # PTT 状态（线程安全）
+        self._ptt_lock = threading.Lock()
         self.is_transmitting = False
         self._is_receiving = False
         self._last_voice_time: float = 0.0
         self._voice_timeout: float = 0.5  # 语音播放超时（秒）
         self._playback_check_thread: Optional[threading.Thread] = None
 
-        # 统计
+        # 统计（线程安全）
+        self._stats_lock = threading.Lock()
         self.voice_packets_sent = 0
         self.voice_packets_received = 0
 
@@ -94,7 +96,9 @@ class TalkService:
 
     def stop(self):
         """停止服务"""
-        self.is_transmitting = False
+        with self._ptt_lock:
+            self.is_transmitting = False
+            self._is_receiving = False
         self.udp_client.disconnect()
         if self._playback_check_thread and self._playback_check_thread.is_alive():
             self._playback_check_thread.join(timeout=1.0)
@@ -110,13 +114,15 @@ class TalkService:
         if not self.is_connected:
             logger.warning("未连接，无法发射")
             return False
-        self.is_transmitting = True
+        with self._ptt_lock:
+            self.is_transmitting = True
         logger.info("PTT 开始发射")
         return True
 
     def stop_transmitting(self):
         """停止发射（PTT 松开）"""
-        self.is_transmitting = False
+        with self._ptt_lock:
+            self.is_transmitting = False
         logger.info("PTT 停止发射")
 
     def send_voice_data(self, pcm_data: bytes) -> bool:
@@ -128,8 +134,9 @@ class TalkService:
         Returns:
             发送是否成功
         """
-        if not self.is_connected or not self.is_transmitting:
-            return False
+        with self._ptt_lock:
+            if not self.is_connected or not self.is_transmitting:
+                return False
 
         # 编码
         encoded = self._tx_codec.encode(pcm_data)
@@ -156,7 +163,8 @@ class TalkService:
             )
 
         if self.udp_client.send_packet(packet):
-            self.voice_packets_sent += 1
+            with self._stats_lock:
+                self.voice_packets_sent += 1
             return True
         return False
 
@@ -217,26 +225,30 @@ class TalkService:
 
     def _on_packet_received(self, packet: NRLPacket):
         """处理收到的数据包（由 UdpClient 回调）"""
-        # 语音包：检查 PTT 状态位
-        if packet.is_voice():
-            if not packet.is_transmitting():
-                return  # 非发送模式，丢弃
+        try:
+            # 语音包：检查 PTT 状态位
+            if packet.is_voice():
+                if not packet.is_transmitting():
+                    return  # 非发送模式，丢弃
 
-        ptype = packet.packet_type
-        if ptype == PacketType.VOICE:
-            self._handle_voice(packet)
-        elif ptype == PacketType.OPUS:
-            self._handle_opus_voice(packet)
-        elif ptype == PacketType.SERVER_VOICE:
-            self._handle_server_voice(packet)
-        elif ptype == PacketType.HEARTBEAT:
-            self._handle_heartbeat(packet)
-        elif ptype == PacketType.TEXT:
-            self._handle_text(packet)
-        elif ptype == PacketType.JOIN_GROUP:
-            self._handle_group_response(packet)
-        else:
-            logger.debug(f"未知包类型: {ptype}")
+            ptype = packet.packet_type
+            if ptype == PacketType.VOICE:
+                self._handle_voice(packet)
+            elif ptype == PacketType.OPUS:
+                self._handle_opus_voice(packet)
+            elif ptype == PacketType.SERVER_VOICE:
+                self._handle_server_voice(packet)
+            elif ptype == PacketType.HEARTBEAT:
+                self._handle_heartbeat(packet)
+            elif ptype == PacketType.TEXT:
+                self._handle_text(packet)
+            elif ptype == PacketType.JOIN_GROUP:
+                self._handle_group_response(packet)
+            else:
+                logger.debug(f"未知包类型: {ptype}")
+        except Exception as e:
+            # 处理异常不应触发重连（与网络错误区分）
+            logger.error(f"数据包处理异常: {e}")
 
     def _handle_voice(self, packet: NRLPacket):
         """处理 G.711 语音包"""
@@ -270,15 +282,31 @@ class TalkService:
 
     def _deliver_voice(self, pcm_data: bytes, packet: NRLPacket, extra: dict = None):
         """分发解码后的语音数据"""
-        self._last_voice_time = time.time()
-        self.voice_packets_received += 1
+        with self._ptt_lock:
+            self._last_voice_time = time.time()
+            self._is_receiving = True
+            transmitting = self.is_transmitting
+        with self._stats_lock:
+            self.voice_packets_received += 1
 
         # 发射中不播放远端语音
-        if self.is_transmitting:
+        if transmitting:
             return
 
+        # 过滤自己发送的语音（服务器会回传）
+        local_call = self.settings.device.callsign
+        local_ssid = self.settings.device.ssid
+        pkt_call = packet.header.get_callsign_str()
+        pkt_ssid = packet.header.ssid
+        if pkt_call == local_call and pkt_ssid == local_ssid:
+            return
+
+        dmr_id = packet.header.dmr_id.hex().upper() if packet.header.dmr_id else ""
         info = {
             'from': packet.callsign_ssid,
+            'from_callsign': packet.header.get_callsign_str(),
+            'ssid': packet.header.ssid,
+            'dmr_id': dmr_id,
             'type': packet.packet_type,
             **(extra or {}),
         }
@@ -295,10 +323,14 @@ class TalkService:
             return
 
         parsed = PacketParser.parse_text_subtype(packet.data)
+        dmr_id = packet.header.dmr_id.hex().upper() if packet.header.dmr_id else ""
         message = {
             'type': 'text',
             'subtype': parsed['subtype'],
             'from': packet.callsign_ssid,
+            'from_callsign': packet.header.get_callsign_str(),
+            'ssid': packet.header.ssid,
+            'dmr_id': dmr_id,
             'content': parsed['content'],
             'raw': parsed['raw'],
             'timestamp': time.time(),
@@ -318,7 +350,6 @@ class TalkService:
 
     def _handle_group_response(self, packet: NRLPacket):
         """处理房间操作响应（由 RoomService 进一步处理）"""
-        # 转发给 RoomService（通过回调或直接引用）
         if self.on_message:
             self.on_message({
                 'type': 'group_response',
@@ -332,10 +363,14 @@ class TalkService:
         """语音播放超时检查"""
         while self.udp_client.is_running:
             try:
-                if self._last_voice_time > 0:
-                    elapsed = time.time() - self._last_voice_time
-                    if elapsed > self._voice_timeout and self._is_receiving:
-                        self._is_receiving = False
+                with self._ptt_lock:
+                    last_time = self._last_voice_time
+                    receiving = self._is_receiving
+                if last_time > 0:
+                    elapsed = time.time() - last_time
+                    if elapsed > self._voice_timeout and receiving:
+                        with self._ptt_lock:
+                            self._is_receiving = False
                         if self.on_status_update:
                             self.on_status_update('voice_timeout', None)
                 time.sleep(0.5)
@@ -351,14 +386,19 @@ class TalkService:
 
     def get_status(self) -> Dict[str, Any]:
         """获取服务状态"""
+        with self._stats_lock:
+            sent = self.voice_packets_sent
+            received = self.voice_packets_received
+        with self._ptt_lock:
+            transmitting = self.is_transmitting
         return {
             'connected': self.is_connected,
-            'transmitting': self.is_transmitting,
+            'transmitting': transmitting,
             'codec': self.settings.audio.codec,
             'server': f"{self.settings.server.host}:{self.settings.server.port}",
             'callsign': f"{self.settings.device.callsign}-{self.settings.device.ssid}",
-            'voice_sent': self.voice_packets_sent,
-            'voice_received': self.voice_packets_received,
+            'voice_sent': sent,
+            'voice_received': received,
             'packets_sent': self.udp_client.packets_sent,
             'packets_received': self.udp_client.packets_received,
         }

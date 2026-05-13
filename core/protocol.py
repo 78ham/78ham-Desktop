@@ -152,13 +152,16 @@ class NRLPacket:
                 f"data_len={len(self.data)})")
 
 
-def is_valid_callsign(callsign: bytes) -> bool:
+def is_valid_callsign(callsign) -> bool:
     """验证呼号格式，与服务端 IsCallSign 保持一致
 
     呼号只能包含大写字母 A-Z 和数字 0-9
     """
     if not callsign:
         return False
+    # 统一转为 bytes 处理
+    if isinstance(callsign, str):
+        callsign = callsign.encode('ascii', errors='ignore')
     for b in callsign:
         if not ((ord('A') <= b <= ord('Z')) or (ord('0') <= b <= ord('9'))):
             return False

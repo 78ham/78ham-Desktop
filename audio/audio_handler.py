@@ -67,6 +67,13 @@ class AudioHandler:
         
         # 播放停止标志 - 用于避免超时检查线程与播放回调的死锁
         self.playback_stop_flag = False
+
+        # 麦克风增益（1.0 = 原始音量，0.0 = 静音，>1.0 = 放大）
+        self.mic_gain = 1.0
+
+        # 软件重采样状态
+        self._recording_native_rate = self.sample_rate
+        self._recording_need_resample = False
         
     def _get_format(self, format_str: str) -> int:
         """获取PyAudio格式"""
@@ -100,6 +107,15 @@ class AudioHandler:
             self.sample_rate = sample_rate
         self.pcm_frame_size = self._calc_pcm_frame_size(codec_type, self.sample_rate)
         self.logger.info(f"音频编码格式已切换为: {codec_type}, PCM帧大小: {self.pcm_frame_size}字节, 采样率: {self.sample_rate}Hz")
+
+    def set_mic_gain(self, gain: float):
+        """设置麦克风增益（纯软件方式）
+
+        Args:
+            gain: 增益值，1.0 = 原始音量，0.0 = 静音，>1.0 = 放大
+        """
+        self.mic_gain = max(0.0, min(10.0, gain))
+        self.logger.info(f"麦克风增益已设置为: {self.mic_gain:.1f}x")
     
     def _ensure_pyaudio(self):
         """延迟初始化PyAudio，线程安全，避免多线程同时初始化PortAudio"""
@@ -132,11 +148,11 @@ class AudioHandler:
                 'max_output_channels': device_info['maxOutputChannels'],
                 'default_sample_rate': device_info['defaultSampleRate']
             })
-            print(f"设备 {i}: {device_info['name']}")
-            print(f"  输入通道: {device_info['maxInputChannels']}")
-            print(f"  输出通道: {device_info['maxOutputChannels']}")
-            print(f"  默认采样率: {device_info['defaultSampleRate']}")
-            print()
+            self.logger.info(
+                f"设备 {i}: {device_info['name']} "
+                f"(输入:{device_info['maxInputChannels']}, "
+                f"输出:{device_info['maxOutputChannels']}, "
+                f"采样率:{device_info['defaultSampleRate']})")
         
         return devices
     
@@ -245,22 +261,41 @@ class AudioHandler:
             if self.is_recording:
                 self.logger.warning("已经在录音中")
                 return
-            
+
             try:
                 self.audio_callback = callback
                 self.is_recording = True
                 self.record_buffer = []
-                
+
+                # 检查设备是否支持请求的采样率，不匹配则启用软件重采样
+                self._recording_native_rate = self.sample_rate
+                self._recording_need_resample = False
+                try:
+                    dev_index = self.input_device_index
+                    if dev_index is not None:
+                        dev_info = self.pyaudio.get_device_info_by_index(dev_index)
+                    else:
+                        dev_info = self.pyaudio.get_device_info_by_index(
+                            self.pyaudio.get_default_input_device_info()['index'])
+                    native_rate = int(dev_info['defaultSampleRate'])
+                    if native_rate != self.sample_rate:
+                        self._recording_native_rate = native_rate
+                        self._recording_need_resample = True
+                        self.logger.info(
+                            f"设备原生采样率 {native_rate}Hz ≠ 目标 {self.sample_rate}Hz，启用软件重采样")
+                except Exception as e:
+                    self.logger.debug(f"获取设备采样率失败: {e}，使用请求值")
+
                 # 设置输入设备参数
                 input_params = {
                     'format': self.format,
                     'channels': self.channels,
-                    'rate': self.sample_rate,
+                    'rate': self._recording_native_rate,
                     'input': True,
                     'frames_per_buffer': self.chunk_size,
                     'stream_callback': self._record_callback
                 }
-                
+
                 # 如果有指定输入设备，使用指定设备
                 if self.input_device_index is not None:
                     input_params['input_device_index'] = self.input_device_index
@@ -269,9 +304,9 @@ class AudioHandler:
                     self.logger.info(f"使用输入设备: {device_name}")
                 else:
                     self.logger.info("使用系统默认输入设备")
-                
+
                 self.input_stream = self.pyaudio.open(**input_params)
-                
+
                 self.input_stream.start_stream()
                 self.logger.info("开始录音")
                 
@@ -313,7 +348,12 @@ class AudioHandler:
                 self._safe_stop_stream(stream_to_stop, "录音")
             except Exception as e:
                 self.logger.error(f"关闭录音流失败: {e}")
-        
+                # 确保流资源被释放
+                try:
+                    stream_to_stop.close()
+                except Exception:
+                    pass
+
         self.logger.info("停止录音")
         return recorded_data
     
@@ -393,35 +433,31 @@ class AudioHandler:
         self.logger.info("停止播放")
     
     def _record_callback(self, in_data, frame_count, time_info, status):
-        """改进的录音回调函数
-        这个函数是录音回调函数，用于处理麦克风输入数据。
+        """录音回调函数（PyAudio 音频线程调用）
 
-        1. 按PCM帧大小管理缓冲区（G.711: 320字节, Opus: 640字节）
-        2. 避免不规则的填充导致的失真
-        3. 确保每个语音包时间长度固定（20ms）
-        4. 参考78HAM的音频处理逻辑
-        
-        时间关系（G.711）：
-        - 采样率: 8000 Hz
-        - 每个样本: 2字节 (16位)
-        - 320字节PCM = 160个样本 = 20ms
-        - 对应160字节G.711数据包
-        
-        时间关系（Opus）：
-        - 采样率: 16000 Hz
-        - 每个样本: 2字节 (16位)
-        - 640字节PCM = 320个样本 = 20ms
-        - 对应变长Opus数据包
+        按PCM帧大小管理缓冲区，确保每个语音包时间长度固定（20ms）。
         """
-        if not self.is_recording:
-            return (None, pyaudio.paContinue)
-        
-        self.record_buffer.append(in_data)
+        with self.lock:
+            if not self.is_recording:
+                return (None, pyaudio.paContinue)
+            self.record_buffer.append(in_data)
         
         # 处理语音数据缓存 - 按PCM帧大小管理
         pending_callbacks = []
         with self.voice_cache_lock:
+            # 软件重采样（设备采样率 ≠ 目标采样率时）
+            if self._recording_need_resample:
+                in_data = self._resample_pcm(
+                    in_data, self._recording_native_rate, self.sample_rate)
+
             self.voice_data_cache.extend(in_data)
+
+            # 应用麦克风增益（纯软件方式）
+            if self.mic_gain != 1.0:
+                samples = np.frombuffer(bytes(self.voice_data_cache), dtype=np.int16)
+                samples = np.clip(samples * self.mic_gain, -32768, 32767).astype(np.int16)
+                self.voice_data_cache = bytearray(samples.tobytes())
+
             current_time = time.time()
             
             # 关键逻辑：当缓存达到或超过一帧PCM时，立即发送
@@ -443,22 +479,35 @@ class AudioHandler:
             self.logger.debug(f"发送音频数据: {len(send_data)} bytes PCM")
         
         return (None, pyaudio.paContinue)
-    
+
+    @staticmethod
+    def _resample_pcm(pcm_data: bytes, src_rate: int, dst_rate: int) -> bytes:
+        """软件重采样 PCM int16 数据（线性插值）"""
+        if src_rate == dst_rate or not pcm_data:
+            return pcm_data
+        samples = np.frombuffer(pcm_data, dtype=np.int16)
+        src_len = len(samples)
+        dst_len = int(src_len * dst_rate / src_rate)
+        if dst_len <= 0:
+            return b'\x00' * (src_rate // dst_rate * 2)
+        src_x = np.linspace(0, 1, src_len, endpoint=False)
+        dst_x = np.linspace(0, 1, dst_len, endpoint=False)
+        resampled = np.interp(dst_x, src_x, samples.astype(np.float64))
+        return np.clip(resampled, -32768, 32767).astype(np.int16).tobytes()
+
     def _play_callback(self, in_data, frame_count, time_info, status):
         """播放回调函数 - 改进数据长度匹配和缓冲区管理"""
-        # 检查停止标志，如果已标记停止则立即返回
-        if not self.is_playing or self.playback_stop_flag:
-            return (b'\x00' * frame_count * self.channels * 2, pyaudio.paContinue)
-        
         # 计算期望的数据长度（16-bit音频，每个样本2字节）
         expected_length = frame_count * self.channels * 2
-        
-        # 从播放缓冲区获取数据
-        data_chunks = []
-        current_length = 0
-        
+
         with self.lock:
+            # 检查停止标志，如果已标记停止则立即返回
+            if not self.is_playing or self.playback_stop_flag:
+                return (b'\x00' * expected_length, pyaudio.paContinue)
+
             # 从缓冲区收集足够的数据
+            data_chunks = []
+            current_length = 0
             while self.play_buffer and current_length < expected_length:
                 try:
                     data_chunk = self.play_buffer.popleft()
@@ -466,7 +515,6 @@ class AudioHandler:
                         data_chunks.append(data_chunk)
                         current_length += len(data_chunk)
                 except (IndexError, AttributeError) as e:
-                    # 缓冲区可能被修改或格式错误，记录但继续
                     self.logger.debug(f"播放缓冲获取异常: {e}")
                     break
         

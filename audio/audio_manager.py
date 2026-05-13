@@ -89,6 +89,16 @@ class AudioManager:
         """根据包类型解码语音数据"""
         return self._voice_processor.decode_voice_by_type(data, packet_type)
 
+    # ==================== 增益控制 ====================
+
+    def set_mic_gain(self, gain: float):
+        """设置麦克风增益（纯软件方式）
+
+        Args:
+            gain: 增益值，1.0 = 原始音量，0.0 = 静音，>1.0 = 放大
+        """
+        self._handler.set_mic_gain(gain)
+
     # ==================== 编码切换 ====================
 
     def set_codec(self, codec_type: str, sample_rate: int):
@@ -97,6 +107,7 @@ class AudioManager:
 
         chunk_size = 640 if codec_type == 'opus' else 320
 
+        self._handler.stop_recording()
         self._handler.stop_playback()
         self._handler.close()
         self._handler = AudioHandler(

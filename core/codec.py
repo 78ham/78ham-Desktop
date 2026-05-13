@@ -318,6 +318,10 @@ class OpusCodec(VoiceCodec):
 
         self._dec_ogg_pages.append(opus_data)
 
+        # 限制缓存大小，防止内存无限增长（保留最近 10 页）
+        if len(self._dec_ogg_pages) > 10:
+            self._dec_ogg_pages = self._dec_ogg_pages[-10:]
+
         if self._dec_frame_cursor < len(self._dec_pcm_frames):
             result = self._dec_pcm_frames[self._dec_frame_cursor]
             self._dec_frame_cursor += 1
