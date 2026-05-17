@@ -122,16 +122,38 @@ Write-Host "  Done" -ForegroundColor Green
 
 # 5. Package
 Write-Host "[5/5] Packaging..." -ForegroundColor Yellow
-Start-Sleep -Seconds 2  # 等待 PyInstaller 释放文件锁
+
+# 等待 PyInstaller 释放文件锁（base_library.zip 等）
+$lockCheckPath = Join-Path $distAppDir "_internal\base_library.zip"
+$waited = 0
+while ($waited -lt 30) {
+    $locked = $false
+    if (Test-Path $lockCheckPath) {
+        try {
+            $fs = [System.IO.File]::Open($lockCheckPath, 'Open', 'Read', 'None')
+            $fs.Close()
+        } catch {
+            $locked = $true
+        }
+    }
+    if (-not $locked) { break }
+    Start-Sleep -Seconds 1
+    $waited++
+    if ($waited % 5 -eq 0) {
+        Write-Host "  Waiting for file lock... ($waited s)" -ForegroundColor DarkYellow
+    }
+}
+
 $zipPath = Join-Path $DistDir $ZipName
 if (Test-Path $zipPath) {
     Remove-Item $zipPath -Force
 }
-Set-Location $DistDir
-Compress-Archive -Path $AppName -DestinationPath $ZipName -Force
 
-$appSize = [math]::Round((Get-ChildItem $AppName -Recurse -File | Measure-Object -Property Length -Sum).Sum / 1MB, 1)
-$zipSize = [math]::Round((Get-Item $ZipName).Length / 1MB, 1)
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.IO.Compression.ZipFile]::CreateFromDirectory($distAppDir, $zipPath)
+
+$appSize = [math]::Round((Get-ChildItem $distAppDir -Recurse -File | Measure-Object -Property Length -Sum).Sum / 1MB, 1)
+$zipSize = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
 
 Write-Host ""
 Write-Host "  Build Complete!" -ForegroundColor Green
