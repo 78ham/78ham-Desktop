@@ -4,6 +4,8 @@
 统一接口，支持 G.711 A-law 和 Opus 两种编码格式。
 接收端根据数据包 Type 字段自动选择解码器。
 """
+import os
+import sys
 import struct
 import logging
 from abc import ABC, abstractmethod
@@ -181,13 +183,30 @@ class G711Codec(VoiceCodec):
 _OPUS_BACKEND: Optional[str] = None
 _OPUS_AVAILABLE = False
 
+# 将本地 libs/ 目录加入 DLL 搜索路径（支持 PyInstaller 打包和开发环境）
+if sys.platform == 'win32':
+    _base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    _libs_dir = os.path.join(_base_dir, 'libs')
+    if os.path.isdir(_libs_dir):
+        os.environ['PATH'] = _libs_dir + os.pathsep + os.environ.get('PATH', '')
+        try:
+            os.add_dll_directory(_libs_dir)  # Python 3.8+
+        except AttributeError:
+            pass
+        # 预加载 opus.dll 以确保 opuslib 能找到
+        try:
+            import ctypes
+            ctypes.CDLL(os.path.join(_libs_dir, 'opus.dll'))
+        except Exception:
+            pass
+
 try:
     import opuslib  # type: ignore
     import opuslib.api  # type: ignore
     _OPUS_BACKEND = "opuslib"
     _OPUS_AVAILABLE = True
-except Exception:
-    pass
+except Exception as e:
+    logger.debug(f"opuslib 加载失败: {e}")
 
 if _OPUS_BACKEND is None:
     try:
@@ -205,23 +224,24 @@ class OpusCodec(VoiceCodec):
     - 采样率: 16kHz
     - 帧时长: 20ms
     - 帧大小: 320 samples (变长编码输出)
-    - 比特率: 36 kbps VBR
+    - 比特率: 可配置 (默认 36 kbps VBR)
     - 应用模式: VOIP
     """
 
-    BITRATE = 36000
+    DEFAULT_BITRATE = 36000
     COMPLEXITY = 10
 
-    def __init__(self):
+    def __init__(self, bitrate: int = DEFAULT_BITRATE):
         if not _OPUS_AVAILABLE:
             raise ImportError("Opus 不可用，请安装: pip install av 或 pip install opuslib")
 
         self._backend = _OPUS_BACKEND
+        self._bitrate = bitrate
 
         if self._backend == "opuslib":
             self._encoder = opuslib.Encoder(16000, 1, opuslib.APPLICATION_VOIP)
             self._decoder = opuslib.Decoder(16000, 1)
-            self._encoder.bitrate = self.BITRATE
+            self._encoder.bitrate = self._bitrate
             self._encoder.complexity = self.COMPLEXITY
         elif self._backend == "av":
             self._enc_pts = 0
@@ -293,7 +313,7 @@ class OpusCodec(VoiceCodec):
         out = _av.open(buf, mode='w', format='ogg')
         stream = out.add_stream('libopus', rate=self.sample_rate)
         stream.layout = 'mono'
-        stream.bit_rate = self.BITRATE
+        stream.bit_rate = self._bitrate
         stream.format = 's16'
 
         samples = np.frombuffer(pcm_data, dtype=np.int16)

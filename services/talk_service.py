@@ -79,7 +79,7 @@ class TalkService:
     def _create_codec(self, codec_type: str) -> VoiceCodec:
         """创建编码器"""
         if codec_type == 'opus' and OpusCodec.is_available():
-            return OpusCodec()
+            return OpusCodec(bitrate=self.settings.audio.opus_bitrate)
         return G711Codec()
 
     # ==================== 生命周期 ====================
@@ -203,15 +203,17 @@ class TalkService:
 
     def set_codec(self, codec_type: str) -> bool:
         """运行时切换发射编码格式"""
+        logger.debug(f"set_codec: 请求={codec_type}, 当前={self.settings.audio.codec}, "
+                     f"opus可用={OpusCodec.is_available()}, 发射中={self.is_transmitting}")
         if codec_type not in ("g711", "opus"):
             return False
         if codec_type == self.settings.audio.codec:
             return True
         if codec_type == "opus" and not OpusCodec.is_available():
-            logger.error("Opus 不可用")
+            logger.error("Opus 不可用 — opuslib/av 均未加载成功")
             return False
         if self.is_transmitting:
-            logger.warning("发射中无法切换编码")
+            logger.warning("发射中无法切换编码 — 正在发射")
             return False
 
         self.settings.audio.codec = codec_type
@@ -219,6 +221,23 @@ class TalkService:
         self._tx_codec = self._create_codec(codec_type)
         self.settings.save_codec()
         logger.info(f"发射编码已切换: {codec_type}")
+        return True
+
+    def set_opus_bitrate(self, bitrate: int) -> bool:
+        """运行时切换 Opus 码率"""
+        if not 6000 <= bitrate <= 510000:
+            return False
+        if self.settings.audio.opus_bitrate == bitrate:
+            return True
+        if self.is_transmitting:
+            logger.warning("发射中无法切换码率")
+            return False
+
+        self.settings.audio.opus_bitrate = bitrate
+        if isinstance(self._tx_codec, OpusCodec):
+            self._tx_codec = self._create_codec('opus')
+        self.settings.save_opus_bitrate()
+        logger.info(f"Opus 码率已切换: {bitrate} bps")
         return True
 
     # ==================== 数据包处理 ====================

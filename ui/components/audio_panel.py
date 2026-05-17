@@ -19,31 +19,43 @@ TAIL_TYPE_MAP = {
 TAIL_TYPE_REVERSE = {v: k for k, v in TAIL_TYPE_MAP.items()}
 TAIL_TYPE_DISPLAY = list(TAIL_TYPE_MAP.keys())
 
+# Opus 码率选项：(bps值, 显示文本)
+BITRATE_OPTIONS = ["16000", "24000", "32000", "36000", "48000", "64000"]
+BITRATE_DISPLAY = ["16 kbps", "24 kbps", "32 kbps", "36 kbps", "48 kbps", "64 kbps"]
+BITRATE_DEFAULT = "36000"
+
 
 class AudioPanel(ctk.CTkFrame):
     """音频控制面板
 
     功能：
+    - 输入/输出设备选择
     - 编码格式选择 (G.711 / Opus)
     - 播放开关
-    - 麦克风增益控制
     - 尾音设置
     """
 
     def __init__(self, master,
                  on_codec_change: Optional[Callable[[str], None]] = None,
                  on_playback_toggle: Optional[Callable[[bool], None]] = None,
-                 on_gain_change: Optional[Callable[[float], None]] = None,
                  on_tail_tone_change: Optional[Callable[[dict], None]] = None,
+                 on_bitrate_change: Optional[Callable[[int], None]] = None,
+                 on_input_device_change: Optional[Callable[[int], None]] = None,
+                 on_output_device_change: Optional[Callable[[int], None]] = None,
                  **kwargs):
         super().__init__(master, **kwargs)
 
         self._on_codec_change = on_codec_change
         self._on_playback_toggle = on_playback_toggle
-        self._on_gain_change = on_gain_change
         self._on_tail_tone_change = on_tail_tone_change
+        self._on_bitrate_change = on_bitrate_change
+        self._on_input_device_change = on_input_device_change
+        self._on_output_device_change = on_output_device_change
         self._playback_enabled = True
-        self._mic_gain = 1.0
+
+        # 设备列表缓存
+        self._input_devices = []  # [{index, name, ...}]
+        self._output_devices = []
 
         # 尾音状态
         self._tail_enabled = False
@@ -61,6 +73,46 @@ class AudioPanel(ctk.CTkFrame):
             self, text="音频设置",
             font=(Fonts.FAMILY_UI, Fonts.SIZE_BODY, "bold"),
         ).pack(anchor="w", padx=Spacing.PAD_SM, pady=(Spacing.PAD_XS, 0))
+
+        # 输入设备（麦克风）
+        input_frame = ctk.CTkFrame(self, fg_color="transparent")
+        input_frame.pack(fill="x", padx=Spacing.PAD_SM, pady=Spacing.PAD_XS)
+
+        ctk.CTkLabel(
+            input_frame, text="麦克风:",
+            font=(Fonts.FAMILY_UI, Fonts.SIZE_SMALL),
+        ).pack(side="left")
+
+        self._input_device_var = ctk.StringVar(value="默认设备")
+        self._input_device_menu = ctk.CTkOptionMenu(
+            input_frame,
+            variable=self._input_device_var,
+            values=["默认设备"],
+            width=140,
+            font=(Fonts.FAMILY_UI, Fonts.SIZE_SMALL),
+            command=self._on_input_device_selected,
+        )
+        self._input_device_menu.pack(side="left", padx=Spacing.PAD_SM)
+
+        # 输出设备（扬声器）
+        output_frame = ctk.CTkFrame(self, fg_color="transparent")
+        output_frame.pack(fill="x", padx=Spacing.PAD_SM, pady=Spacing.PAD_XS)
+
+        ctk.CTkLabel(
+            output_frame, text="扬声器:",
+            font=(Fonts.FAMILY_UI, Fonts.SIZE_SMALL),
+        ).pack(side="left")
+
+        self._output_device_var = ctk.StringVar(value="默认设备")
+        self._output_device_menu = ctk.CTkOptionMenu(
+            output_frame,
+            variable=self._output_device_var,
+            values=["默认设备"],
+            width=140,
+            font=(Fonts.FAMILY_UI, Fonts.SIZE_SMALL),
+            command=self._on_output_device_selected,
+        )
+        self._output_device_menu.pack(side="left", padx=Spacing.PAD_SM)
 
         # 编码格式
         codec_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -82,6 +134,25 @@ class AudioPanel(ctk.CTkFrame):
         )
         self._codec_menu.pack(side="left", padx=Spacing.PAD_SM)
 
+        # Opus 码率（仅 opus 时可见）
+        self._bitrate_frame = ctk.CTkFrame(self, fg_color="transparent")
+
+        ctk.CTkLabel(
+            self._bitrate_frame, text="码率:",
+            font=(Fonts.FAMILY_UI, Fonts.SIZE_SMALL),
+        ).pack(side="left")
+
+        self._bitrate_var = ctk.StringVar(value=BITRATE_DEFAULT)
+        self._bitrate_menu = ctk.CTkOptionMenu(
+            self._bitrate_frame,
+            variable=self._bitrate_var,
+            values=BITRATE_OPTIONS,
+            width=100,
+            font=(Fonts.FAMILY_UI, Fonts.SIZE_SMALL),
+            command=self._on_bitrate_selected,
+        )
+        self._bitrate_menu.pack(side="left", padx=Spacing.PAD_SM)
+
         # 播放开关
         playback_frame = ctk.CTkFrame(self, fg_color="transparent")
         playback_frame.pack(fill="x", padx=Spacing.PAD_SM, pady=Spacing.PAD_XS)
@@ -98,33 +169,6 @@ class AudioPanel(ctk.CTkFrame):
         )
         self._playback_switch.pack(side="left", padx=Spacing.PAD_SM)
         self._playback_switch.select()
-
-        # 麦克风增益
-        gain_frame = ctk.CTkFrame(self, fg_color="transparent")
-        gain_frame.pack(fill="x", padx=Spacing.PAD_SM, pady=Spacing.PAD_XS)
-
-        ctk.CTkLabel(
-            gain_frame, text="增益:",
-            font=(Fonts.FAMILY_UI, Fonts.SIZE_SMALL),
-        ).pack(side="left")
-
-        self._gain_slider = ctk.CTkSlider(
-            gain_frame,
-            from_=0.0,
-            to=3.0,
-            number_of_steps=30,
-            command=self._on_gain_slider_changed,
-            width=120,
-        )
-        self._gain_slider.pack(side="left", padx=Spacing.PAD_SM)
-        self._gain_slider.set(1.0)
-
-        self._gain_label = ctk.CTkLabel(
-            gain_frame, text="1.0x",
-            font=(Fonts.FAMILY_UI, Fonts.SIZE_SMALL),
-            width=40,
-        )
-        self._gain_label.pack(side="left")
 
         # ===== 尾音设置 =====
         sep = ctk.CTkFrame(self, height=1, fg_color=Colors.TEXT_MUTED)
@@ -250,22 +294,43 @@ class AudioPanel(ctk.CTkFrame):
         # 初始化尾音 UI 可见性
         self._update_tail_type_visibility()
 
+    # ==================== 设备事件处理 ====================
+
+    def _on_input_device_selected(self, choice: str):
+        """输入设备选择"""
+        if self._on_input_device_change:
+            # 根据显示名称查找设备索引
+            for dev in self._input_devices:
+                if dev['name'] == choice:
+                    self._on_input_device_change(dev['index'])
+                    return
+            # 选择"默认设备"
+            self._on_input_device_change(-1)
+
+    def _on_output_device_selected(self, choice: str):
+        """输出设备选择"""
+        if self._on_output_device_change:
+            for dev in self._output_devices:
+                if dev['name'] == choice:
+                    self._on_output_device_change(dev['index'])
+                    return
+            self._on_output_device_change(-1)
+
     # ==================== 音频事件处理 ====================
 
     def _on_codec_selected(self, choice: str):
+        self._update_bitrate_visibility(choice)
         if self._on_codec_change:
             self._on_codec_change(choice)
+
+    def _on_bitrate_selected(self, choice: str):
+        if self._on_bitrate_change:
+            self._on_bitrate_change(int(choice))
 
     def _on_playback_switched(self):
         self._playback_enabled = self._playback_switch.get() == 1
         if self._on_playback_toggle:
             self._on_playback_toggle(self._playback_enabled)
-
-    def _on_gain_slider_changed(self, value: float):
-        self._mic_gain = round(value, 1)
-        self._gain_label.configure(text=f"{self._mic_gain:.1f}x")
-        if self._on_gain_change:
-            self._on_gain_change(self._mic_gain)
 
     # ==================== 尾音事件处理 ====================
 
@@ -322,6 +387,16 @@ class AudioPanel(ctk.CTkFrame):
                 "amplitude": self._mdc_amplitude,
             })
 
+    def _update_bitrate_visibility(self, codec: str = ""):
+        """根据编码格式显示/隐藏码率控件"""
+        if not codec:
+            codec = self._codec_var.get()
+        if codec == "opus":
+            self._bitrate_frame.pack(
+                fill="x", padx=Spacing.PAD_SM, pady=Spacing.PAD_XS)
+        else:
+            self._bitrate_frame.pack_forget()
+
     def _update_tail_type_visibility(self):
         """根据尾音类型显示/隐藏对应控件"""
         # 先隐藏所有
@@ -341,9 +416,50 @@ class AudioPanel(ctk.CTkFrame):
 
     # ==================== 公开接口 ====================
 
+    def set_input_devices(self, devices: list, current_index: int = None):
+        """设置输入设备列表
+
+        Args:
+            devices: 设备列表 [{index, name, ...}]
+            current_index: 当前选中的设备索引，None 表示默认
+        """
+        self._input_devices = devices
+        names = ["默认设备"] + [d['name'] for d in devices]
+        self._input_device_menu.configure(values=names)
+
+        if current_index is not None:
+            for dev in devices:
+                if dev['index'] == current_index:
+                    self._input_device_var.set(dev['name'])
+                    return
+        self._input_device_var.set("默认设备")
+
+    def set_output_devices(self, devices: list, current_index: int = None):
+        """设置输出设备列表
+
+        Args:
+            devices: 设备列表 [{index, name, ...}]
+            current_index: 当前选中的设备索引，None 表示默认
+        """
+        self._output_devices = devices
+        names = ["默认设备"] + [d['name'] for d in devices]
+        self._output_device_menu.configure(values=names)
+
+        if current_index is not None:
+            for dev in devices:
+                if dev['index'] == current_index:
+                    self._output_device_var.set(dev['name'])
+                    return
+        self._output_device_var.set("默认设备")
+
     def set_codec(self, codec: str):
         """设置当前编码"""
         self._codec_var.set(codec)
+        self._update_bitrate_visibility(codec)
+
+    def set_bitrate(self, bitrate: int):
+        """设置当前码率"""
+        self._bitrate_var.set(str(bitrate))
 
     def set_info(self, text: str):
         """设置状态信息文本"""
@@ -356,12 +472,6 @@ class AudioPanel(ctk.CTkFrame):
             self._playback_switch.select()
         else:
             self._playback_switch.deselect()
-
-    def set_mic_gain(self, gain: float):
-        """设置麦克风增益值"""
-        self._mic_gain = max(0.0, min(3.0, gain))
-        self._gain_slider.set(self._mic_gain)
-        self._gain_label.configure(text=f"{self._mic_gain:.1f}x")
 
     def set_tail_tone_config(self, config: dict):
         """从配置恢复尾音 UI 状态"""
@@ -399,19 +509,16 @@ class AudioPanel(ctk.CTkFrame):
         self._update_tail_type_visibility()
 
     @property
-    def mic_gain(self) -> float:
-        return self._mic_gain
-
-    @property
     def playback_enabled(self) -> bool:
         return self._playback_enabled
 
     def set_enabled(self, enabled: bool):
         """启用/禁用整个面板"""
         state = "normal" if enabled else "disabled"
+        self._input_device_menu.configure(state=state)
+        self._output_device_menu.configure(state=state)
         self._codec_menu.configure(state=state)
         self._playback_switch.configure(state=state)
-        self._gain_slider.configure(state=state)
         self._tail_switch.configure(state=state)
         self._tail_type_menu.configure(state=state)
         self._tail_file_btn.configure(state=state)

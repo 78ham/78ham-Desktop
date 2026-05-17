@@ -68,9 +68,6 @@ class AudioHandler:
         # 播放停止标志 - 用于避免超时检查线程与播放回调的死锁
         self.playback_stop_flag = False
 
-        # 麦克风增益（1.0 = 原始音量，0.0 = 静音，>1.0 = 放大）
-        self.mic_gain = 1.0
-
         # 软件重采样状态
         self._recording_native_rate = self.sample_rate
         self._recording_need_resample = False
@@ -108,15 +105,6 @@ class AudioHandler:
         self.pcm_frame_size = self._calc_pcm_frame_size(codec_type, self.sample_rate)
         self.logger.info(f"音频编码格式已切换为: {codec_type}, PCM帧大小: {self.pcm_frame_size}字节, 采样率: {self.sample_rate}Hz")
 
-    def set_mic_gain(self, gain: float):
-        """设置麦克风增益（纯软件方式）
-
-        Args:
-            gain: 增益值，1.0 = 原始音量，0.0 = 静音，>1.0 = 放大
-        """
-        self.mic_gain = max(0.0, min(10.0, gain))
-        self.logger.info(f"麦克风增益已设置为: {self.mic_gain:.1f}x")
-    
     def _ensure_pyaudio(self):
         """延迟初始化PyAudio，线程安全，避免多线程同时初始化PortAudio"""
         if self.pyaudio is None:
@@ -287,12 +275,17 @@ class AudioHandler:
                     self.logger.debug(f"获取设备采样率失败: {e}，使用请求值")
 
                 # 设置输入设备参数
+                # frames_per_buffer 必须是样本数（不是字节数），且应匹配 20ms 帧
+                # 对于 paInt16 mono：每样本 2 字节
+                native_rate = self._recording_native_rate
+                # 20ms 的样本数 = 采样率 * 0.02
+                frames_per_buffer = int(native_rate * 0.02)
                 input_params = {
                     'format': self.format,
                     'channels': self.channels,
-                    'rate': self._recording_native_rate,
+                    'rate': native_rate,
                     'input': True,
-                    'frames_per_buffer': self.chunk_size,
+                    'frames_per_buffer': frames_per_buffer,
                     'stream_callback': self._record_callback
                 }
 
@@ -371,12 +364,14 @@ class AudioHandler:
                 self.play_buffer = deque()  # 使用deque而非列表，支持高效的两端操作
                 
                 # 设置输出设备参数
+                # frames_per_buffer 是样本数，匹配 20ms 帧
+                play_frames_per_buffer = int(self.sample_rate * 0.02)
                 output_params = {
                     'format': self.format,
                     'channels': self.channels,
                     'rate': self.sample_rate,
                     'output': True,
-                    'frames_per_buffer': self.chunk_size,
+                    'frames_per_buffer': play_frames_per_buffer,
                     'stream_callback': self._play_callback
                 }
                 
@@ -441,7 +436,7 @@ class AudioHandler:
             if not self.is_recording:
                 return (None, pyaudio.paContinue)
             self.record_buffer.append(in_data)
-        
+
         # 处理语音数据缓存 - 按PCM帧大小管理
         pending_callbacks = []
         with self.voice_cache_lock:
@@ -452,14 +447,8 @@ class AudioHandler:
 
             self.voice_data_cache.extend(in_data)
 
-            # 应用麦克风增益（纯软件方式）
-            if self.mic_gain != 1.0:
-                samples = np.frombuffer(bytes(self.voice_data_cache), dtype=np.int16)
-                samples = np.clip(samples * self.mic_gain, -32768, 32767).astype(np.int16)
-                self.voice_data_cache = bytearray(samples.tobytes())
-
             current_time = time.time()
-            
+
             # 关键逻辑：当缓存达到或超过一帧PCM时，立即发送
             # G.711: 320字节PCM → 160字节G.711 = 20ms
             # Opus:  640字节PCM → 变长Opus帧 = 20ms
@@ -469,15 +458,15 @@ class AudioHandler:
                 send_data = bytes(self.voice_data_cache[:frame_size])
                 self.voice_data_cache = self.voice_data_cache[frame_size:]
                 self.last_voice_send_time = current_time
-                
+
                 if self.audio_callback:
                     pending_callbacks.append(send_data)
-        
+
         # 在锁外调用回调，减少锁持有时间
         for send_data in pending_callbacks:
             self.audio_callback(send_data)
             self.logger.debug(f"发送音频数据: {len(send_data)} bytes PCM")
-        
+
         return (None, pyaudio.paContinue)
 
     @staticmethod

@@ -58,7 +58,7 @@ try {
 }
 
 # 2. Clean
-Write-Host "[2/4] Cleaning..." -ForegroundColor Yellow
+Write-Host "[2/5] Cleaning..." -ForegroundColor Yellow
 if (Test-Path $BuildDir) {
     Remove-Item -Recurse -Force $BuildDir -ErrorAction SilentlyContinue
 }
@@ -69,7 +69,7 @@ if (Test-Path $distAppDir) {
 Write-Host "  Done" -ForegroundColor Green
 
 # 3. Build
-Write-Host "[3/4] Building..." -ForegroundColor Yellow
+Write-Host "[3/5] Building..." -ForegroundColor Yellow
 Set-Location $ProjectDir
 & $PythonExe -m PyInstaller --clean $SpecFile
 if ($LASTEXITCODE -ne 0) {
@@ -97,6 +97,14 @@ device:
 audio:
   codec: "g711"
   sample_rate: 8000
+  opus_bitrate: 36000
+
+tail_tone:
+  enabled: false
+  tail_type: "default"
+  custom_file: ""
+  mdc_id: 0
+  amplitude: 0.2
 
 network:
   heartbeat_interval: 2

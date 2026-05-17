@@ -46,6 +46,8 @@ desktop.ini
 *.pcm
 *.opus
 
+# Note: libs/ 目录包含 opus.dll 等运行时依赖，需要跟踪到版本库
+
 # PyInstaller
 *.manifest
 *.spec.bak

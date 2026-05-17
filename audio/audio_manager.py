@@ -89,16 +89,6 @@ class AudioManager:
         """根据包类型解码语音数据"""
         return self._voice_processor.decode_voice_by_type(data, packet_type)
 
-    # ==================== 增益控制 ====================
-
-    def set_mic_gain(self, gain: float):
-        """设置麦克风增益（纯软件方式）
-
-        Args:
-            gain: 增益值，1.0 = 原始音量，0.0 = 静音，>1.0 = 放大
-        """
-        self._handler.set_mic_gain(gain)
-
     # ==================== 编码切换 ====================
 
     def set_codec(self, codec_type: str, sample_rate: int):
@@ -125,6 +115,30 @@ class AudioManager:
     def list_devices(self):
         """列出音频设备"""
         return self._handler.list_audio_devices()
+
+    def get_input_devices(self) -> list:
+        """获取可用的输入设备列表"""
+        return self._handler.get_input_devices()
+
+    def get_output_devices(self) -> list:
+        """获取可用的输出设备列表"""
+        return self._handler.get_output_devices()
+
+    def set_input_device(self, device_index: int) -> bool:
+        """设置输入设备"""
+        return self._handler.set_input_device(device_index)
+
+    def set_output_device(self, device_index: int) -> bool:
+        """设置输出设备"""
+        return self._handler.set_output_device(device_index)
+
+    def get_current_input_device(self) -> dict:
+        """获取当前输入设备信息"""
+        return self._handler.get_current_input_device()
+
+    def get_current_output_device(self) -> dict:
+        """获取当前输出设备信息"""
+        return self._handler.get_current_output_device()
 
     def get_buffer_status(self) -> dict:
         """获取缓冲区状态"""

@@ -3,7 +3,7 @@
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
+    binaries=[('libs/opus.dll', '.')],
     datas=[('app.ico', '.')],
     hiddenimports=[
         'customtkinter',

@@ -68,7 +68,7 @@ class AudioConfig:
     channels: int = 1
     codec: str = "g711"     # "g711" 或 "opus"
     format: str = "paInt16"
-    mic_gain: float = 1.0   # 麦克风增益，1.0 = 原始音量
+    opus_bitrate: int = 36000  # Opus 码率 (bps)
 
     def __post_init__(self):
         """根据编码格式自动修正采样率"""
@@ -191,7 +191,7 @@ class Settings:
             channels=audio.get('channels', 1),
             codec=codec,
             format=audio.get('format', 'paInt16'),
-            mic_gain=audio.get('mic_gain', 1.0),
+            opus_bitrate=audio.get('opus_bitrate', 36000),
         )
 
         # 网络配置
@@ -245,7 +245,6 @@ class Settings:
             'audio': {
                 'codec': 'g711',
                 'sample_rate': 8000,
-                'mic_gain': 1.0,
             },
             'tail_tone': {
                 'enabled': False,
@@ -310,36 +309,35 @@ class Settings:
             except Exception as e:
                 logger.error(f"保存配置失败: {e}")
 
-    def save_mic_gain(self):
-        """保存麦克风增益到配置文件（保留注释和格式）"""
+    def save_opus_bitrate(self):
+        """保存 Opus 码率到配置文件（保留注释和格式）"""
         with self._save_lock:
             try:
                 with open(self._config_file, 'r', encoding='utf-8') as f:
                     content = f.read()
 
-                gain_value = self.audio.mic_gain
+                bitrate_value = self.audio.opus_bitrate
 
-                if 'mic_gain:' in content:
+                if 'opus_bitrate:' in content:
                     content = re.sub(
-                        r'^(\s*mic_gain:\s*)[\d.]+',
-                        rf'\g<1>{gain_value}',
+                        r'^(\s*opus_bitrate:\s*)\d+',
+                        rf'\g<1>{bitrate_value}',
                         content,
                         flags=re.MULTILINE,
                     )
                 else:
-                    # 在 audio 段落末尾追加
                     content = re.sub(
                         r'(audio:\s*\n(?:\s+\S.*\n)*)',
-                        lambda m: m.group(0).rstrip('\n') + f'\n  mic_gain: {gain_value}\n',
+                        lambda m: m.group(0).rstrip('\n') + f'\n  opus_bitrate: {bitrate_value}\n',
                         content
                     )
 
                 with open(self._config_file, 'w', encoding='utf-8') as f:
                     f.write(content)
 
-                logger.info(f"麦克风增益已保存: {gain_value}")
+                logger.info(f"Opus 码率已保存: {bitrate_value}")
             except Exception as e:
-                logger.error(f"保存麦克风增益失败: {e}")
+                logger.error(f"保存 Opus 码率失败: {e}")
 
     def save_tail_tone(self):
         """保存尾音配置到配置文件（保留注释和格式）"""

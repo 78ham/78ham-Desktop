@@ -109,8 +109,10 @@ class App(ctk.CTk):
             left_panel,
             on_codec_change=self._on_codec_change,
             on_playback_toggle=self._on_playback_toggle,
-            on_gain_change=self._on_gain_change,
             on_tail_tone_change=self._on_tail_tone_change,
+            on_bitrate_change=self._on_bitrate_change,
+            on_input_device_change=self._on_input_device_change,
+            on_output_device_change=self._on_output_device_change,
         )
         self._audio_panel.pack(fill="x", pady=(0, Spacing.PAD_SM))
 
@@ -183,10 +185,12 @@ class App(ctk.CTk):
             codec_type=self._settings.audio.codec,
         )
 
-        # 从配置加载麦克风增益
-        mic_gain = self._settings.audio.mic_gain
-        self._audio.set_mic_gain(mic_gain)
-        self._audio_panel.set_mic_gain(mic_gain)
+        # 初始化码率控件
+        self._audio_panel.set_codec(self._settings.audio.codec)
+        self._audio_panel.set_bitrate(self._settings.audio.opus_bitrate)
+
+        # 加载音频设备列表
+        self._load_audio_devices()
 
         # 尾音服务
         self._tail_tone = TailToneService(
@@ -295,6 +299,8 @@ class App(ctk.CTk):
             self._ptt_button.set_enabled(True)
             self._chat_panel.set_enabled(True)
             self._room_selector.set_enabled(True)
+            # 连接成功后自动获取房间列表
+            self._room.request_group_list()
         else:
             self._connected = False
             self._status_bar.set_connection_state("disconnected")
@@ -400,28 +406,80 @@ class App(ctk.CTk):
             return
         self._room.request_group_list()
 
+    def _load_audio_devices(self):
+        """加载音频设备列表到 UI"""
+        try:
+            input_devices = self._audio.get_input_devices()
+            output_devices = self._audio.get_output_devices()
+            self._audio_panel.set_input_devices(input_devices)
+            self._audio_panel.set_output_devices(output_devices)
+            logger.info(f"加载音频设备: 输入 {len(input_devices)} 个, 输出 {len(output_devices)} 个")
+        except Exception as e:
+            logger.error(f"加载音频设备失败: {e}")
+
+    def _on_input_device_change(self, device_index: int):
+        """输入设备变更"""
+        if device_index < 0:
+            # 选择默认设备
+            self._audio._handler.input_device_index = None
+            logger.info("输入设备已设为默认")
+        else:
+            if self._audio.set_input_device(device_index):
+                logger.info(f"输入设备已切换: 索引 {device_index}")
+            else:
+                self._chat_panel.add_system_message("输入设备切换失败")
+
+    def _on_output_device_change(self, device_index: int):
+        """输出设备变更"""
+        if device_index < 0:
+            # 选择默认设备
+            self._audio._handler.output_device_index = None
+            logger.info("输出设备已设为默认")
+        else:
+            if self._audio.set_output_device(device_index):
+                logger.info(f"输出设备已切换: 索引 {device_index}")
+            else:
+                self._chat_panel.add_system_message("输出设备切换失败")
+
     def _on_codec_change(self, codec: str):
         """切换编码"""
-        if self._talk and self._talk.set_codec(codec):
+        if not self._talk:
+            self._chat_panel.add_system_message("编码切换失败: 服务未初始化")
+            self._audio_panel.set_codec(self._settings.audio.codec)
+            return
+
+        from core.codec import OpusCodec
+        if codec == "opus" and not OpusCodec.is_available():
+            self._chat_panel.add_system_message("编码切换失败: Opus 不可用，请安装 opuslib")
+            self._audio_panel.set_codec(self._settings.audio.codec)
+            return
+
+        if codec == "opus" and self._talk.is_transmitting:
+            self._chat_panel.add_system_message("编码切换失败: 发射中无法切换")
+            self._audio_panel.set_codec(self._settings.audio.codec)
+            return
+
+        if self._talk.set_codec(codec):
             self._status_bar.set_codec(codec)
             self._chat_panel.add_system_message(f"编码已切换: {codec}")
             if self._tail_tone:
                 self._tail_tone.on_codec_changed()
         else:
             self._chat_panel.add_system_message("编码切换失败")
-            # 恢复显示
             self._audio_panel.set_codec(self._settings.audio.codec)
+
+    def _on_bitrate_change(self, bitrate: int):
+        """切换 Opus 码率"""
+        if self._talk and self._talk.set_opus_bitrate(bitrate):
+            self._chat_panel.add_system_message(f"Opus 码率已切换: {bitrate // 1000} kbps")
+        else:
+            self._chat_panel.add_system_message("码率切换失败")
+            self._audio_panel.set_bitrate(self._settings.audio.opus_bitrate)
 
     def _on_playback_toggle(self, enabled: bool):
         """播放开关"""
         # TalkService 内部处理播放状态
         pass
-
-    def _on_gain_change(self, gain: float):
-        """麦克风增益变化"""
-        self._audio.set_mic_gain(gain)
-        self._settings.audio.mic_gain = gain
-        self._settings.save_mic_gain()
 
     def _on_tail_tone_change(self, config: dict):
         """尾音配置变化"""
@@ -638,6 +696,8 @@ class App(ctk.CTk):
                                             fg_color=Colors.DISCONNECTED)
                 self._chat_panel.add_system_message("重连成功")
                 self._update_ui_state()
+                # 连接成功后自动获取房间列表
+                self._room.request_group_list()
 
         self.after(0, _update)
 

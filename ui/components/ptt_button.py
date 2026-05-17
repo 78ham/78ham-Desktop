@@ -49,10 +49,8 @@ class PttButton(ctk.CTkFrame):
         )
         self._button.pack(padx=Spacing.PAD_MD, pady=Spacing.PAD_SM)
 
-        # 绑定鼠标事件
+        # 绑定鼠标按下事件
         self._button.bind("<ButtonPress-1>", self._on_mouse_press)
-        self._button.bind("<ButtonRelease-1>", self._on_mouse_release)
-        self._button.bind("<Leave>", self._on_mouse_leave)
 
         # 状态提示
         self._hint_label = ctk.CTkLabel(
@@ -69,17 +67,16 @@ class PttButton(ctk.CTkFrame):
         if not self._enabled or self._is_transmitting:
             return
         self._start_transmit()
+        # 绑定全局鼠标释放事件，确保鼠标移出按钮后松开仍能停止发射
+        self.winfo_toplevel().bind("<ButtonRelease-1>", self._on_global_mouse_release)
 
-    def _on_mouse_release(self, event=None):
-        """鼠标松开"""
+    def _on_global_mouse_release(self, event=None):
+        """全局鼠标松开事件"""
+        # 取消全局绑定
+        self.winfo_toplevel().unbind("<ButtonRelease-1>")
         if not self._is_transmitting:
             return
         self._stop_transmit()
-
-    def _on_mouse_leave(self, event=None):
-        """鼠标离开按钮区域，自动停止发射防止卡住"""
-        if self._is_transmitting:
-            self._stop_transmit()
 
     def _start_transmit(self):
         """开始发射"""

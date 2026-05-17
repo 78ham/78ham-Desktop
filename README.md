@@ -11,7 +11,8 @@
 
 - **PTT 对讲** — 按住说话，支持 G.711 A-law / Opus 双编码
 - **语音通信** — 实时语音传输与接收，网络抖动缓冲
-- **麦克风增益** — 纯软件增益控制（0.0x ~ 3.0x），滑块实时调节
+- **音频设备选择** — 运行时切换麦克风/扬声器设备
+- **Opus 码率配置** — 支持 16~64 kbps 码率运行时切换
 - **尾音功能** — PTT 松开后自动发送尾音，支持三种模式：
   - 默认尾音：DTMF "91" 双音提示
   - 自定义尾音：导入 WAV/PCM 音频文件
@@ -76,6 +77,7 @@
 │       ├── room_selector.py
 │       ├── audio_panel.py
 │       └── config_dialog.py
+├── libs/                           # 本地 DLL（opus.dll 等）
 ├── utils/                          # 工具（预留）
 ├── config.yaml                     # 配置文件（gitignore）
 ├── requirements.txt                # 依赖
@@ -112,7 +114,7 @@ device:
 audio:
   codec: "g711"        # g711 或 opus
   sample_rate: 8000    # g711=8000, opus=16000
-  mic_gain: 1.0        # 麦克风增益 (0.0~3.0)
+  opus_bitrate: 36000  # Opus 码率 (bps)，范围 16000~64000
 
 tail_tone:
   enabled: false           # 是否启用尾音
@@ -192,6 +194,21 @@ pyinstaller 78HAM.spec
 | `opuslib` | 原生 Opus 绑定（可选） |
 | `av` | PyAV/FFmpeg Opus 支持（可选） |
 | `winrt-Windows.Devices.Geolocation` | GPS 定位（可选，仅 Windows） |
+
+## 近期更新
+
+### 2026-05-17
+
+- **移除麦克风增益功能** — 删除软件增益控制（`mic_gain`），相关 UI 滑块、配置项、代码全部移除
+- **新增 Opus 码率配置** — 支持 16/24/32/36/48/64 kbps 码率运行时切换，配置持久化到 `config.yaml`
+- **新增音频设备选择** — 音频面板新增麦克风/扬声器下拉菜单，支持运行时切换输入/输出设备
+- **修复 PTT 按钮行为** — 改用全局鼠标释放事件，解决鼠标移出按钮区域后松开无法停止发射的问题
+- **改进音频缓冲** — 修正 `frames_per_buffer` 计算，统一使用 20ms 帧大小（采样率 × 0.02）
+- **优化 Opus DLL 加载** — 自动搜索 `libs/` 目录，支持 PyInstaller 打包后的路径解析
+- **自动获取房间列表** — 连接和重连成功后自动拉取可用房间列表
+- **改进编码切换逻辑** — 增加 Opus 可用性检查、发射状态检查等前置校验，提供更详细的错误提示
+- **构建配置更新** — `78HAM.spec` 中将 `libs/opus.dll` 加入打包二进制文件
+- **AudioManager API 扩展** — 新增 `get_input_devices()`、`get_output_devices()`、`set_input_device()`、`set_output_device()` 等设备管理方法
 
 ## License
 
