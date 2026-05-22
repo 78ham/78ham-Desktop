@@ -4,6 +4,7 @@ NRL2 协议数据结构定义
 纯数据结构，不包含业务逻辑。
 协议头部 48 字节固定格式，数据部分变长。
 """
+import sys
 import struct
 import time
 from dataclasses import dataclass, field
@@ -30,12 +31,22 @@ class DevModel(IntEnum):
     ANDROID = 101       # Android
     IOS = 102           # iOS
     WINDOWS = 103       # Windows 桌面
+    LINUX = 104         # Linux 桌面
     BROWSER = 105       # 浏览器
     EMERGENCY = 106     # 紧急设备
     SERVER = 200        # 服务器
     BM_GATEWAY = 201    # BM 网关
     NANNY = 250         # 监控设备
     FULL_NETWORK = 255  # 全网
+
+
+def get_default_dev_model() -> int:
+    """根据当前平台返回默认设备型号"""
+    if sys.platform == 'win32':
+        return DevModel.WINDOWS
+    elif sys.platform == 'linux':
+        return DevModel.LINUX
+    return DevModel.WINDOWS
 
 
 class TextSubtype:
@@ -100,7 +111,7 @@ class NRLHeader:
     count: int = 0
     callsign: bytes = field(default=b"\x00" * 6)
     ssid: int = 0
-    dev_mode: int = DevModel.WINDOWS
+    dev_mode: int = field(default_factory=get_default_dev_model)
     original_callsign: bytes = field(default=b"\x00" * 6)
     original_ssid: int = 0
     original_ip: bytes = field(default=b"\x00" * 4)

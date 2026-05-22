@@ -2,6 +2,8 @@ pyaudio==0.2.11
 pyyaml==6.0.1
 numpy==1.24.3
 customtkinter==5.2.2
+pynput>=1.7.6; sys_platform == 'linux'
+keyboard>=0.13.5; sys_platform == 'win32'
 # 以下为可选依赖，预发布版本不打包：
 # av>=12.0.0       # PyAV (FFmpeg封装，提供Opus编解码支持) — 约30-50MB
 # opuslib>=3.0.1  # 可选：原生opus绑定（需要额外安装opus DLL）

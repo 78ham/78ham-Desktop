@@ -12,6 +12,8 @@ from typing import Optional
 
 import yaml  # type: ignore
 
+from core.protocol import get_default_dev_model
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,7 +24,7 @@ class DeviceConfig:
     ssid: int = 1
     dmr_id: str = "123456"
     password: str = ""
-    model: int = 103  # DevModel.WINDOWS
+    model: int = field(default_factory=get_default_dev_model)
 
 
 @dataclass
@@ -150,7 +152,7 @@ class Settings:
             ssid=dev.get('ssid', 1),
             dmr_id=dev.get('dmr_id', '123456'),
             password=dev.get('password', ''),
-            model=dev.get('model', 103),
+            model=dev.get('model', get_default_dev_model()),
         )
 
         # 服务器配置

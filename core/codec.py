@@ -184,9 +184,10 @@ _OPUS_BACKEND: Optional[str] = None
 _OPUS_AVAILABLE = False
 
 # 将本地 libs/ 目录加入 DLL 搜索路径（支持 PyInstaller 打包和开发环境）
+_base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_libs_dir = os.path.join(_base_dir, 'libs')
+
 if sys.platform == 'win32':
-    _base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    _libs_dir = os.path.join(_base_dir, 'libs')
     if os.path.isdir(_libs_dir):
         os.environ['PATH'] = _libs_dir + os.pathsep + os.environ.get('PATH', '')
         try:
@@ -199,6 +200,26 @@ if sys.platform == 'win32':
             ctypes.CDLL(os.path.join(_libs_dir, 'opus.dll'))
         except Exception:
             pass
+
+elif sys.platform == 'linux':
+    # Linux: 先尝试系统库，再尝试打包目录中的 libopus.so.0
+    import ctypes.util
+    _opus_lib = ctypes.util.find_library('opus')
+    if _opus_lib:
+        try:
+            import ctypes
+            ctypes.CDLL(_opus_lib)
+        except Exception:
+            pass
+    else:
+        # PyInstaller 打包场景：从 _MEIPASS 目录加载
+        _candidate = os.path.join(_libs_dir, 'libopus.so.0')
+        if os.path.isfile(_candidate):
+            try:
+                import ctypes
+                ctypes.CDLL(_candidate)
+            except Exception:
+                pass
 
 try:
     import opuslib  # type: ignore

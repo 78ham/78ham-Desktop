@@ -1,0 +1,3 @@
+Depends: libportaudio2, libopus0, python3-tk
+Section: hamradio
+Priority: optional

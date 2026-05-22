@@ -9,7 +9,7 @@ from typing import Optional
 
 from .protocol import (
     NRLHeader, NRLPacket, PacketType, DevModel,
-    PROTOCOL_VERSION, HEADER_SIZE
+    PROTOCOL_VERSION, HEADER_SIZE, get_default_dev_model
 )
 
 logger = logging.getLogger(__name__)
@@ -43,22 +43,24 @@ class PacketFactory:
         return b'\x00' * 3
 
     def _make_header(self, callsign: str, ssid: int, dmr_id: str,
-                     packet_type: int, dev_mode: int = DevModel.WINDOWS,
+                     packet_type: int, dev_mode: int = None,
                      status: int = 0x01, count: Optional[int] = None) -> NRLHeader:
         """创建通用头部"""
+        if dev_mode is None:
+            dev_mode = get_default_dev_model()
         return NRLHeader(
             version=PROTOCOL_VERSION,
             packet_type=packet_type,
             callsign=callsign.encode('utf-8').ljust(6, b'\x00')[:6],
             ssid=ssid,
             dmr_id=self.parse_dmr_id_hex(dmr_id),
-            dev_mode=dev_mode or DevModel.WINDOWS,
+            dev_mode=dev_mode,
             status=status,
             count=count if count is not None else self._next_count(),
         )
 
     def create_heartbeat(self, callsign: str, ssid: int, dmr_id: str = "",
-                         dev_mode: int = DevModel.WINDOWS) -> NRLPacket:
+                         dev_mode: int = None) -> NRLPacket:
         """创建心跳包（仅头部，无数据）"""
         header = self._make_header(
             callsign, ssid, dmr_id,
@@ -113,7 +115,7 @@ class PacketFactory:
         return NRLPacket(header=header, data=text_data)
 
     def create_group_list_request(self, callsign: str, ssid: int, dmr_id: str,
-                                  dev_mode: int = DevModel.WINDOWS) -> NRLPacket:
+                                  dev_mode: int = None) -> NRLPacket:
         """创建获取房间列表请求包 (Type=7, Subtype=2)"""
         header = self._make_header(
             callsign, ssid, dmr_id,
@@ -141,7 +143,7 @@ class PacketFactory:
     def create_server_voice(self, callsign: str, ssid: int, dmr_id: str,
                             voice_data: bytes, original_callsign: str,
                             original_ssid: int, original_ip: bytes,
-                            dev_mode: int = DevModel.WINDOWS) -> NRLPacket:
+                            dev_mode: int = None) -> NRLPacket:
         """创建服务器互联语音包 (Type=9)"""
         # 确保 160 字节
         if len(voice_data) < 160:

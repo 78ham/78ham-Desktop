@@ -1,0 +1,24 @@
+#!/bin/bash
+set -e
+
+# 创建符号链接到 PATH
+ln -sf /opt/78ham-desktop/78HAM /usr/local/bin/78ham
+
+# 更新桌面数据库
+if command -v update-desktop-database &>/dev/null; then
+    update-desktop-database /usr/share/applications/ 2>/dev/null || true
+fi
+
+# 安装 .desktop 文件
+if [ -f /opt/78ham-desktop/78HAM.desktop ]; then
+    cp /opt/78ham-desktop/78HAM.desktop /usr/share/applications/78ham-desktop.desktop
+fi
+
+# 安装图标
+if [ -f /opt/78ham-desktop/app.ico ]; then
+    mkdir -p /usr/share/pixmaps
+    cp /opt/78ham-desktop/app.ico /usr/share/pixmaps/78ham.ico
+fi
+
+echo "78HAM Desktop 已安装到 /opt/78ham-desktop/"
+echo "运行: 78ham 或从应用菜单启动"

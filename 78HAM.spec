@@ -1,9 +1,31 @@
 # -*- mode: python ; coding: utf-8 -*-
+import sys
+
+# 根据平台选择要打包的原生库
+_binaries = []
+if sys.platform == 'win32':
+    _binaries = [('libs/opus.dll', '.')]
+elif sys.platform == 'linux':
+    import os
+    # 尝试常见路径（CentOS/RHEL 用 lib64，Ubuntu/Debian 用 lib/x86_64-linux-gnu）
+    for candidate in ['/usr/lib64/libopus.so.0',
+                      '/usr/lib/x86_64-linux-gnu/libopus.so.0',
+                      '/usr/lib/libopus.so.0']:
+        if os.path.isfile(candidate):
+            _binaries = [(candidate, '.')]
+            break
+
+# 平台特定的 hidden imports
+_platform_imports = []
+if sys.platform == 'win32':
+    _platform_imports = ['keyboard']
+elif sys.platform == 'linux':
+    _platform_imports = ['pynput', 'pynput.keyboard', 'pynput.keyboard._xorg']
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[('libs/opus.dll', '.')],
+    binaries=_binaries,
     datas=[('app.ico', '.')],
     hiddenimports=[
         'customtkinter',
@@ -13,7 +35,7 @@ a = Analysis(
         'PIL.Image',
         'PIL.ImageTk',
         'requests',
-        'keyboard',
+        *_platform_imports,
         # 内部模块（确保 PyInstaller 能发现）
         'core',
         'core.protocol',
@@ -49,7 +71,6 @@ a = Analysis(
         'ui.components.config_dialog',
     ],
     hookspath=[],
-    hooksconfig={},
     runtime_hooks=[],
     excludes=[
         'tkinter.test',
@@ -61,8 +82,6 @@ a = Analysis(
         'lib2to3',
         'test',
     ],
-    noarchive=False,
-    optimize=0,
 )
 pyz = PYZ(a.pure)
 

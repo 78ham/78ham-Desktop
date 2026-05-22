@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=78HAM Desktop
+Comment=业余无线电 PTT 对讲客户端
+Exec=/opt/78ham-desktop/78HAM
+Icon=78ham
+Terminal=false
+Type=Application
+Categories=HamRadio;Network;AudioVideo;
+Keywords=radio;ptt;amateur;ham;
+StartupNotify=true

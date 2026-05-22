@@ -1,0 +1,16 @@
+#!/bin/bash
+set -e
+
+# 移除符号链接
+rm -f /usr/local/bin/78ham
+
+# 移除 .desktop 文件
+rm -f /usr/share/applications/78ham-desktop.desktop
+
+# 移除图标
+rm -f /usr/share/pixmaps/78ham.ico
+
+# 更新桌面数据库
+if command -v update-desktop-database &>/dev/null; then
+    update-desktop-database /usr/share/applications/ 2>/dev/null || true
+fi
