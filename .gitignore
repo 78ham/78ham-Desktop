@@ -27,9 +27,11 @@ env/
 *~
 
 # Config files (contain credentials)
-config.yaml
-config2.yaml
-config/config.yaml
+config*.yaml
+config/config*.yaml
+
+# Claude Code
+.claude/
 
 # Test files
 test_*.py
