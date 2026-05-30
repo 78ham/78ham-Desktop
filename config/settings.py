@@ -300,8 +300,13 @@ class Settings:
         replacement = rf'\g<1>"{codec_value}"'
         append_template = None
         
-        if 'tx_codec:' not in open(self._config_file, 'r', encoding='utf-8').read():
-            append_template = f'\n  tx_codec: "{codec_value}"\n'
+        try:
+            with open(self._config_file, "r", encoding="utf-8") as f:
+                cfg_content = f.read()
+        except Exception:
+            cfg_content = ''
+        if 'tx_codec:' not in cfg_content:
+            append_template = f"\n  tx_codec: \"{codec_value}\"\n"
         
         self._save_config_field('codec', pattern, replacement, append_template)
         logger.info(f"发射编码已保存: {codec_value}")
@@ -312,8 +317,14 @@ class Settings:
         
         pattern = r'^(\s*opus_bitrate:\s*)\d+'
         replacement = rf'\g<1>{bitrate_value}'
-        append_template = f'\n  opus_bitrate: {bitrate_value}\n' if 'opus_bitrate:' not in open(self._config_file, 'r', encoding='utf-8').read() else None
-        
+        append_template = None
+        try:
+            with open(self._config_file, "r", encoding="utf-8") as f:
+                cfg_content = f.read()
+            if 'opus_bitrate:' not in cfg_content:
+                append_template = f"\n  opus_bitrate: {bitrate_value}\n"
+        except Exception:
+            append_template = f"\n  opus_bitrate: {bitrate_value}\n"
         self._save_config_field('opus_bitrate', pattern, replacement, append_template)
         logger.info(f"Opus 码率已保存: {bitrate_value}")
 
@@ -321,7 +332,12 @@ class Settings:
         """保存尾音配置到配置文件（保留注释和格式）"""
         tt = self.tail_tone
         
-        if 'tail_tone:' in open(self._config_file, 'r', encoding='utf-8').read():
+        try:
+            with open(self._config_file, 'r', encoding='utf-8') as f:
+                file_content = f.read()
+        except Exception:
+            file_content = ''
+        if 'tail_tone:' in file_content:
             # 更新已有配置段
             def _replace_field(text, key, value):
                 if isinstance(value, bool):
@@ -381,8 +397,14 @@ class Settings:
         
         pattern = r'^(\s*current_server:\s*)\d+'
         replacement = rf'\g<1>{idx}'
-        append_template = f'\ncurrent_server: {idx}\n' if 'current_server:' not in open(self._config_file, 'r', encoding='utf-8').read() else None
-        
+        append_template = None
+        try:
+            with open(self._config_file, "r", encoding="utf-8") as f:
+                cfg_content = f.read()
+            if 'current_server:' not in cfg_content:
+                append_template = f"\ncurrent_server: {idx}\n"
+        except Exception:
+            append_template = f"\ncurrent_server: {idx}\n"
         self._save_config_field('current_server', pattern, replacement, append_template)
         logger.info(f"当前服务器索引已保存: {idx}")
 

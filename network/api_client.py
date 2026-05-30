@@ -27,6 +27,17 @@ class ApiClient:
         self.token: Optional[str] = None
         self._max_retries = 3
         self._timeout = 10
+        self._session = None
+
+    def _get_session(self):
+        """获取共享 requests.Session（延迟初始化）"""
+        if self._session is None:
+            try:
+                import requests as _req
+                self._session = _req.Session()
+            except ImportError:
+                return None
+        return self._session
 
     def _request(self, method: str, path: str, data: dict = None,
                  params: dict = None) -> Optional[Dict]:
@@ -42,13 +53,17 @@ class ApiClient:
         if self.token:
             headers['x-token'] = self.token
 
+        session = self._get_session()
+        if session is None:
+            return None
+
         for attempt in range(self._max_retries):
             try:
                 if method.upper() == 'GET':
-                    resp = requests.get(url, params=params, headers=headers,
+                    resp = session.get(url, params=params, headers=headers,
                                        timeout=self._timeout)
                 else:
-                    resp = requests.post(url, json=data, headers=headers,
+                    resp = session.post(url, json=data, headers=headers,
                                         timeout=self._timeout)
 
                 if resp.status_code == 200:

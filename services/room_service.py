@@ -124,7 +124,7 @@ class RoomService:
             else:
                 return
 
-        # 在锁外调用回调
+        # 在锁外调用回调（变量已在锁内捕获）
         if subtype == 2 and callback:
             callback(group_list)
         elif subtype == 1 and callback:

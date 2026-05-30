@@ -47,7 +47,7 @@ class PacketParser:
                 return None
 
             # 检查数据完整性
-            if len(data) < length and length > HEADER_SIZE:
+            if len(data) < length or length > 65535:
                 logger.debug(f"数据包不完整: 期望 {length} 字节，实际 {len(data)} 字节")
                 return None
 
@@ -149,6 +149,7 @@ class PacketParser:
                     return (lat, lng)
             except ValueError:
                 pass
+        logger.debug(f"无法解析位置坐标: {content}")
         return (0.0, 0.0)
 
     @staticmethod

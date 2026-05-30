@@ -24,6 +24,8 @@ class AudioHandler:
         "paInt32": pyaudio.paInt32,
         "paFloat32": pyaudio.paFloat32,
     }
+
+    # --- 以下方法将逐步拆分到独立模块：recorder.py / player.py / jitter_buffer.py ---
     
     def __init__(self, sample_rate: int = 8000, channels: int = 1, 
                  chunk_size: int = 320, format_str: str = "paInt16",
@@ -64,7 +66,7 @@ class AudioHandler:
         
         # 语音数据缓存（累积到一帧PCM后发送）
         self.voice_data_cache = bytearray()
-        self.voice_cache_lock = threading.Lock()
+        self.voice_cache_lock = threading.RLock()
         self.last_voice_send_time = 0.0
         
         # 网络抖动缓冲
@@ -413,7 +415,7 @@ class AudioHandler:
         
         logger.info("停止播放")
     
-    def _record_callback(self, in_data, frame_count, time_info, status):
+    def _record_callback(self, in_data: bytes, frame_count: int, time_info: dict, status: int):
         """录音回调函数（PyAudio 音频线程调用）"""
         with self.lock:
             if not self.is_recording:
@@ -466,7 +468,7 @@ class AudioHandler:
         resampled = np.interp(dst_x, src_x, samples.astype(np.float64))
         return np.clip(resampled, -32768, 32767).astype(np.int16).tobytes()
 
-    def _play_callback(self, in_data, frame_count, time_info, status):
+    def _play_callback(self, in_data: bytes, frame_count: int, time_info: dict, status: int):
         """播放回调函数"""
         expected_length = frame_count * self.channels * 2
 
@@ -477,12 +479,15 @@ class AudioHandler:
             # 从缓冲区收集足够的数据
             data_chunks = []
             current_length = 0
-            while self.play_buffer and current_length < expected_length:
+            max_iterations = 100  # 安全保护，避免无限循环
+            iterations = 0
+            while self.play_buffer and current_length < expected_length and iterations < max_iterations:
                 try:
                     data_chunk = self.play_buffer.popleft()
                     if data_chunk:
                         data_chunks.append(data_chunk)
                         current_length += len(data_chunk)
+                    iterations += 1
                 except (IndexError, AttributeError) as e:
                     logger.debug(f"播放缓冲获取异常: {e}")
                     break
@@ -513,9 +518,9 @@ class AudioHandler:
         with self.jitter_buffer_lock:
             timestamped_data = (time.time(), data)
             self.jitter_buffer.append(timestamped_data)
-            
-            if len(self.jitter_buffer) >= self.jitter_buffer_size:
-                self._process_jitter_buffer()
+        
+        if len(self.jitter_buffer) >= self.jitter_buffer_size:
+            self._process_jitter_buffer()
     
     def _process_jitter_buffer(self):
         """处理抖动缓冲区中的数据"""
@@ -690,162 +695,3 @@ class AudioHandler:
         except Exception as e:
             logger.error(f"关闭音频处理失败: {e}")
 
-
-class VoiceProcessor:
-    """语音处理器，处理G.711和Opus编解码
-    
-    参考78HAM的G.711和Opus实现，提供编解码功能
-    支持错误恢复和数据包丢失处理
-    
-    G.711 (Type=1): 8kHz, 160字节/帧, 20ms
-    Opus  (Type=8): 16kHz, 变长/帧, 20ms
-    """
-    
-    def __init__(self, codec_type: str = "g711"):
-        self.codec_type = codec_type
-        self.g711_codec = G711Codec()
-        self._opus_codec = None
-        
-        # 统计信息
-        self.encode_count = 0
-        self.decode_count = 0
-        self.error_count = 0
-    
-    @property
-    def opus_codec(self) -> OpusCodec:
-        """延迟初始化Opus编解码器"""
-        if self._opus_codec is None:
-            if not OpusCodec.is_available():
-                raise ImportError("opuslib 未安装，无法使用Opus编码。请运行: pip install opuslib")
-            self._opus_codec = OpusCodec()
-        return self._opus_codec
-    
-    def set_codec(self, codec_type: str):
-        """切换编码格式"""
-        self.codec_type = codec_type
-        logger.info(f"语音编码格式已切换为: {codec_type}")
-    
-    def encode_voice(self, pcm_data: bytes) -> bytes:
-        """编码PCM语音数据"""
-        if self.codec_type == "opus":
-            return self._encode_opus(pcm_data)
-        else:
-            return self._encode_g711(pcm_data)
-    
-    def decode_voice(self, data: bytes) -> bytes:
-        """解码语音数据为PCM"""
-        if self.codec_type == "opus":
-            return self._decode_opus(data)
-        else:
-            return self._decode_g711(data)
-    
-    def decode_voice_by_type(self, data: bytes, packet_type: int) -> bytes:
-        """根据数据包类型解码语音数据（接收端使用，不依赖当前codec_type）"""
-        if packet_type == PacketType.OPUS:
-            return self._decode_opus(data)
-        else:
-            return self._decode_g711(data)
-    
-    def _encode_g711(self, pcm_data: bytes) -> bytes:
-        """G.711编码：320字节PCM → 160字节G.711"""
-        try:
-            if not pcm_data:
-                logger.warning("PCM数据为空，返回静音帧")
-                return b'\x80' * 160
-            
-            encoded = self.g711_codec.encode(pcm_data)
-            
-            if not encoded:
-                logger.warning("G.711编码失败: 编码结果为空")
-                return b'\x80' * 160
-            
-            self.encode_count += 1
-            logger.debug(f"G.711编码: {len(pcm_data)} bytes PCM -> {len(encoded)} bytes")
-            return encoded
-            
-        except Exception as e:
-            logger.error(f"G.711编码异常: {e}")
-            self.error_count += 1
-            return b'\x80' * 160
-    
-    def _encode_opus(self, pcm_data: bytes) -> bytes:
-        """Opus编码：640字节PCM → 变长Opus帧"""
-        try:
-            if not pcm_data:
-                logger.warning("PCM数据为空，返回Opus静音帧")
-                return self.opus_codec.encode(b'\x00' * OpusCodec.PCM_FRAME_BYTES)
-            
-            encoded = self.opus_codec.encode(pcm_data)
-            
-            if not encoded:
-                logger.warning("Opus编码失败: 编码结果为空")
-                return self.opus_codec.encode(b'\x00' * OpusCodec.PCM_FRAME_BYTES)
-            
-            self.encode_count += 1
-            logger.debug(f"Opus编码: {len(pcm_data)} bytes PCM -> {len(encoded)} bytes")
-            return encoded
-            
-        except Exception as e:
-            logger.error(f"Opus编码异常: {e}")
-            self.error_count += 1
-            return b''
-    
-    def _decode_g711(self, g711_data: bytes) -> bytes:
-        """G.711解码：160字节G.711 → 320字节PCM"""
-        try:
-            if not g711_data:
-                logger.warning("G.711数据为空，返回静音数据")
-                return b'\x00' * 320
-            
-            pcm_data = self.g711_codec.decode(g711_data)
-            
-            if not pcm_data:
-                logger.warning(f"G.711解码失败: 输入长度={len(g711_data)}")
-                return b'\x00' * 320
-            
-            self.decode_count += 1
-            logger.debug(f"G.711解码: {len(g711_data)} bytes -> {len(pcm_data)} bytes PCM")
-            return pcm_data
-            
-        except Exception as e:
-            logger.error(f"G.711解码异常: {e}, 数据长度={len(g711_data) if g711_data else 0}")
-            self.error_count += 1
-            return b'\x00' * 320
-    
-    def _decode_opus(self, opus_data: bytes) -> bytes:
-        """Opus解码：变长Opus帧 → 640字节PCM"""
-        try:
-            if not opus_data:
-                logger.warning("Opus数据为空，返回静音数据")
-                return b'\x00' * OpusCodec.PCM_FRAME_BYTES
-            
-            pcm_data = self.opus_codec.decode(opus_data)
-            
-            if not pcm_data:
-                logger.warning(f"Opus解码失败: 输入长度={len(opus_data)}")
-                return b'\x00' * OpusCodec.PCM_FRAME_BYTES
-            
-            self.decode_count += 1
-            logger.debug(f"Opus解码: {len(opus_data)} bytes -> {len(pcm_data)} bytes PCM")
-            return pcm_data
-            
-        except Exception as e:
-            logger.error(f"Opus解码异常: {e}, 数据长度={len(opus_data) if opus_data else 0}")
-            self.error_count += 1
-            return b'\x00' * OpusCodec.PCM_FRAME_BYTES
-    
-    def process_recorded_audio(self, pcm_data: bytes) -> bytes:
-        """处理录制的音频数据"""
-        return self.encode_voice(pcm_data)
-    
-    def process_received_audio(self, audio_data: bytes, packet_type: int = 1) -> bytes:
-        """处理接收的音频数据（根据数据包类型自动解码）"""
-        return self.decode_voice_by_type(audio_data, packet_type)
-    
-    def get_stats(self) -> Dict[str, int]:
-        """获取处理统计信息"""
-        return {
-            'encode_count': self.encode_count,
-            'decode_count': self.decode_count,
-            'error_count': self.error_count
-        }

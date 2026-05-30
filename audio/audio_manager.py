@@ -21,7 +21,8 @@ class AudioManager:
                  chunk_size: int = 320, format_str: str = "paInt16",
                  codec_type: str = "g711"):
         # 延迟导入，保持向后兼容
-        from audio.audio_handler import AudioHandler, VoiceProcessor
+        from audio.audio_handler import AudioHandler
+        from audio.voice_processor import VoiceProcessor
 
         self._handler = AudioHandler(
             sample_rate=sample_rate,
@@ -69,7 +70,7 @@ class AudioManager:
 
     def add_playback_data(self, pcm_data: bytes):
         """添加 PCM 数据到播放缓冲区"""
-        self._handler.add_playback_data_immediate(pcm_data)
+        self._handler.add_playback_data(pcm_data)
 
     @property
     def playback_stop_flag(self) -> bool:
@@ -93,7 +94,8 @@ class AudioManager:
 
     def set_codec(self, codec_type: str, sample_rate: int):
         """切换编码格式（需要重建音频流）"""
-        from audio.audio_handler import AudioHandler, VoiceProcessor
+        from audio.audio_handler import AudioHandler
+        from audio.voice_processor import VoiceProcessor
 
         chunk_size = 640 if codec_type == 'opus' else 320
 
@@ -131,6 +133,14 @@ class AudioManager:
     def set_output_device(self, device_index: int) -> bool:
         """设置输出设备"""
         return self._handler.set_output_device(device_index)
+
+    def reset_input_device(self):
+        """重置输入设备为系统默认"""
+        self._handler.input_device_index = None
+
+    def reset_output_device(self):
+        """重置输出设备为系统默认"""
+        self._handler.output_device_index = None
 
     def get_current_input_device(self) -> dict:
         """获取当前输入设备信息"""

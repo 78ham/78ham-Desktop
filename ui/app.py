@@ -280,7 +280,11 @@ class App(ctk.CTk):
 
         # 在后台线程执行连接
         def _do_connect():
-            success = self._talk.start()
+            try:
+                success = self._talk.start()
+            except Exception:
+                logger.exception("连接线程异常")
+                success = False
             self.after(0, lambda: self._on_connect_result(success))
 
         threading.Thread(target=_do_connect, daemon=True).start()
@@ -344,7 +348,7 @@ class App(ctk.CTk):
         if not self._connected:
             return
         self._audio.stop_recording()
-        # 发送尾音（在停止录音之后、清除发射标志之前）
+        # 发送尾音（is_transmitting 仍为 True 时调用）
         self._send_tail_tone()
         self._talk.stop_transmitting()
         self._ptt_button.set_idle()
@@ -421,7 +425,7 @@ class App(ctk.CTk):
         """输入设备变更"""
         if device_index < 0:
             # 选择默认设备
-            self._audio._handler.input_device_index = None
+            self._audio.reset_input_device()
             logger.info("输入设备已设为默认")
         else:
             if self._audio.set_input_device(device_index):
@@ -433,7 +437,7 @@ class App(ctk.CTk):
         """输出设备变更"""
         if device_index < 0:
             # 选择默认设备
-            self._audio._handler.output_device_index = None
+            self._audio.reset_output_device()
             logger.info("输出设备已设为默认")
         else:
             if self._audio.set_output_device(device_index):

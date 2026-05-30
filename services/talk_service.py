@@ -10,7 +10,7 @@ import threading
 from typing import Optional, Callable, Dict, Any
 
 from core.protocol import NRLPacket, PacketType
-from core.codec import G711Codec, OpusCodec, VoiceCodec
+from core.codec import G711Codec, OpusCodec, VoiceCodec, get_codec
 from core.packet_factory import PacketFactory
 from core.packet_parser import PacketParser
 from config.settings import Settings
@@ -61,6 +61,7 @@ class TalkService:
 
         # PTT 状态（线程安全）
         self._ptt_lock = threading.Lock()
+        self._codec_lock = threading.Lock()
         self.is_transmitting = False
         self._is_receiving = False
         self._last_voice_time: float = 0.0
@@ -83,8 +84,9 @@ class TalkService:
 
     def _create_codec(self, codec_type: str) -> VoiceCodec:
         """创建编码器"""
-        if codec_type == 'opus' and OpusCodec.is_available():
-            return OpusCodec(bitrate=self.settings.audio.opus_bitrate)
+        codec = get_codec(codec_type, bitrate=self.settings.audio.opus_bitrate)
+        if codec is not None:
+            return codec
         return G711Codec()
 
     # ==================== 生命周期 ====================
@@ -186,6 +188,7 @@ class TalkService:
         text_bytes = message.encode('utf-8')
         max_len = self.settings.network.buffer_size - 48
         if len(text_bytes) > max_len:
+            logger.warning(f"消息被截断: {len(text_bytes)} > {max_len} 字节")
             text_bytes = text_bytes[:max_len]
 
         packet = self._packet_factory.create_text(
@@ -217,14 +220,14 @@ class TalkService:
         if codec_type == "opus" and not OpusCodec.is_available():
             logger.error("Opus 不可用 — opuslib/av 均未加载成功")
             return False
-        if self.is_transmitting:
-            logger.warning("发射中无法切换编码 — 正在发射")
-            return False
-
-        self.settings.audio.codec = codec_type
-        self.settings.audio.sample_rate = 16000 if codec_type == 'opus' else 8000
-        self._tx_codec = self._create_codec(codec_type)
-        self.settings.save_codec()
+        with self._codec_lock:
+            if self.is_transmitting:
+                logger.warning("发射中无法切换编码 — 正在发射")
+                return False
+            self.settings.audio.codec = codec_type
+            self.settings.audio.sample_rate = 16000 if codec_type == 'opus' else 8000
+            self._tx_codec = self._create_codec(codec_type)
+            self.settings.save_codec()
         logger.info(f"发射编码已切换: {codec_type}")
         return True
 

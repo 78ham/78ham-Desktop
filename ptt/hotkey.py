@@ -63,8 +63,8 @@ class PttController:
             self.unregister()
 
             # 注册按下和松开事件，保存句柄
-            self._press_hook = keyboard.on_press_key(key, lambda _: self._on_press(), suppress=False)
-            self._release_hook = keyboard.on_release_key(key, lambda _: self._on_release(), suppress=False)
+            self._press_hook = keyboard.on_press_key(key, lambda _: self._safe_callback(self._on_press), suppress=False)
+            self._release_hook = keyboard.on_release_key(key, lambda _: self._safe_callback(self._on_release), suppress=False)
 
             self._registered = True
             self._hotkey = key

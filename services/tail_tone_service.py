@@ -7,6 +7,7 @@ import struct
 import math
 import wave
 import logging
+import threading
 from typing import Optional, Callable, List
 
 from services.mdc1200 import MDC1200Encoder, OP_PTT_ID
@@ -75,7 +76,7 @@ class TailToneService:
             self._tail_type != tail_type or
             self._custom_file != custom_file or
             self._mdc_id != mdc_id or
-            abs(self._amplitude - amplitude) > 0.001
+            abs(self._amplitude - amplitude) >= 0.001
         )
         if changed:
             self._enabled = enabled

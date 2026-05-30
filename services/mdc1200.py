@@ -41,8 +41,8 @@ UINT32_MAX = 0x100000000
 _SINTABLE = None
 
 
-def _generate_sintable():
-    """生成 256 点正弦查找表"""
+def _ensure_sintable():
+    """延迟初始化正弦查找表"""
     global _SINTABLE
     if _SINTABLE is not None:
         return
@@ -51,7 +51,10 @@ def _generate_sintable():
         _SINTABLE[i] = int(22282 * math.sin(2 * math.pi * i / 256))
 
 
-_generate_sintable()
+def _get_sintable():
+    """返回正弦查找表（延迟生成）"""
+    _ensure_sintable()
+    return _SINTABLE
 
 
 def _flip(val: int, bits: int) -> int:
@@ -174,7 +177,7 @@ class MDC1200Encoder:
                 tthu = (tthu + INCR_1200) % UINT32_MAX
 
             ofs = (tthu >> 24) & 0xFF
-            sample = int(_SINTABLE[ofs] * amplitude)
+            sample = int(_get_sintable()[ofs] * amplitude)
             samples.append(sample)
 
         pcm = struct.pack(f'<{len(samples)}h', *samples)

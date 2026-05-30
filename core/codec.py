@@ -410,3 +410,26 @@ class OpusCodec(VoiceCodec):
     def get_backend() -> Optional[str]:
         """返回当前使用的 Opus 后端名称"""
         return _OPUS_BACKEND
+
+
+# codec registry
+_CODEC_REGISTRY = {}
+
+
+def register_codec(name, codec_cls):
+    _CODEC_REGISTRY[name] = codec_cls
+
+
+def get_codec(name, **kwargs):
+    cls = _CODEC_REGISTRY.get(name)
+    if cls is None:
+        return None
+    return cls(**kwargs)
+
+
+def list_codecs():
+    return list(_CODEC_REGISTRY.keys())
+
+
+register_codec('g711', G711Codec)
+register_codec('opus', OpusCodec)

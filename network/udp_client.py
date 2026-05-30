@@ -47,7 +47,7 @@ class UdpClient:
         self._socket_lock = threading.Lock()
 
         # 线程
-        self._running = False
+        self._running_event = threading.Event()
         self._receive_thread: Optional[threading.Thread] = None
         self._heartbeat_thread: Optional[threading.Thread] = None
 
@@ -61,7 +61,7 @@ class UdpClient:
 
     @property
     def is_running(self) -> bool:
-        return self._running
+        return self._running_event.is_set()
 
     def connect(self) -> bool:
         """建立 UDP 连接并启动收发线程"""
@@ -88,7 +88,7 @@ class UdpClient:
 
             # 标记连接成功
             self.connection_mgr.state = ConnectionState.CONNECTED
-            self._running = True
+            self._running_event.set()
 
             # 启动线程
             self._receive_thread = threading.Thread(
@@ -113,7 +113,7 @@ class UdpClient:
 
     def disconnect(self):
         """断开连接"""
-        self._running = False
+        self._running_event.clear()
         self._stop_threads()
         self._close_socket()
         self.connection_mgr.reset()
@@ -194,13 +194,13 @@ class UdpClient:
         """接收数据循环（使用 select 避免忙等）"""
         consecutive_errors = 0
 
-        while self._running:
+        while self.is_running:
             try:
                 if not self._socket:
-                    time.sleep(0.1)
+                    time.sleep(0.05)
                     continue
 
-                ready, _, _ = select.select([self._socket], [], [], 0.1)
+                ready, _, _ = select.select([self._socket], [], [], 0.05)
                 if not ready:
                     continue
 
@@ -227,7 +227,7 @@ class UdpClient:
                     self.on_packet_received(packet)
 
             except OSError as e:
-                if not self._running:
+                if not self.is_running:
                     break
                 logger.error(f"接收错误: {e}")
                 consecutive_errors += 1
@@ -249,7 +249,7 @@ class UdpClient:
         tick = 0
         failures = 0
 
-        while self._running:
+        while self.is_running:
             try:
                 if tick <= 0:
                     if self.connection_mgr.is_connected:
@@ -292,7 +292,7 @@ class UdpClient:
         self._close_socket()
         time.sleep(self.connection_mgr.reconnect_delay)
 
-        if not self._running:
+        if not self.is_running:
             return
 
         try:
@@ -310,10 +310,11 @@ class UdpClient:
 
         except Exception as e:
             logger.error(f"重连失败: {e}")
+            self.connection_mgr.state = ConnectionState.DISCONNECTED
 
     def _stop_threads(self):
         """停止所有后台线程"""
-        self._running = False
+        self._running_event.clear()
         for t in (self._receive_thread, self._heartbeat_thread):
             if t and t.is_alive():
                 t.join(timeout=self.THREAD_JOIN_TIMEOUT)
