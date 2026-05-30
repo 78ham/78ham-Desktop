@@ -8,7 +8,7 @@ import re
 import logging
 import threading
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import yaml  # type: ignore
 
@@ -38,7 +38,7 @@ class ServerInfo:
     total: int = 0
 
     @classmethod
-    def from_config(cls, cfg: dict) -> "ServerInfo":
+    def from_config(cls, cfg: Dict[str, Any]) -> "ServerInfo":
         """从配置字典创建，兼容新旧格式"""
         port_val = cfg.get('port', 60050)
         if isinstance(port_val, str):
@@ -274,149 +274,117 @@ class Settings:
         except Exception as e:
             logger.error(f"创建默认配置失败: {e}")
 
-    def save_codec(self):
-        """保存当前发射编码到配置文件（保留注释和格式）"""
+    def _save_config_field(self, field_name: str, pattern: str, replacement: str,
+                          append_template: Optional[str] = None):
+        """通用配置保存方法（保留注释和格式）"""
         with self._save_lock:
             try:
                 with open(self._config_file, 'r', encoding='utf-8') as f:
                     content = f.read()
 
-                codec_value = self.audio.codec
-
-                if 'tx_codec:' in content:
-                    content = re.sub(
-                        r'^(\s*tx_codec:\s*)["\']?\w+["\']?',
-                        rf'\g<1>"{codec_value}"',
-                        content,
-                        flags=re.MULTILINE,
-                    )
-                elif 'codec:' in content:
-                    content = re.sub(
-                        r'^(\s*codec:\s*)["\']?\w+["\']?',
-                        rf'\g<1>tx_codec: "{codec_value}"',
-                        content,
-                        flags=re.MULTILINE,
-                    )
-                else:
-                    content = re.sub(
-                        r'(audio:\s*\n(?:\s+\S.*\n)*)',
-                        lambda m: m.group(0).rstrip('\n') + f'\n  tx_codec: "{codec_value}"\n',
-                        content
-                    )
+                if re.search(pattern, content, re.MULTILINE):
+                    content = re.sub(pattern, replacement, content, flags=re.MULTILINE)
+                elif append_template:
+                    content = content.rstrip('\n') + append_template
 
                 with open(self._config_file, 'w', encoding='utf-8') as f:
                     f.write(content)
-
-                logger.info(f"发射编码已保存: {codec_value}")
             except Exception as e:
-                logger.error(f"保存配置失败: {e}")
+                logger.error(f"保存配置字段 {field_name} 失败: {e}")
+
+    def save_codec(self):
+        """保存当前发射编码到配置文件（保留注释和格式）"""
+        codec_value = self.audio.codec
+        
+        pattern = r'^(\s*tx_codec:\s*)["\']?\w+["\']?'
+        replacement = rf'\g<1>"{codec_value}"'
+        append_template = None
+        
+        if 'tx_codec:' not in open(self._config_file, 'r', encoding='utf-8').read():
+            append_template = f'\n  tx_codec: "{codec_value}"\n'
+        
+        self._save_config_field('codec', pattern, replacement, append_template)
+        logger.info(f"发射编码已保存: {codec_value}")
 
     def save_opus_bitrate(self):
         """保存 Opus 码率到配置文件（保留注释和格式）"""
-        with self._save_lock:
-            try:
-                with open(self._config_file, 'r', encoding='utf-8') as f:
-                    content = f.read()
-
-                bitrate_value = self.audio.opus_bitrate
-
-                if 'opus_bitrate:' in content:
-                    content = re.sub(
-                        r'^(\s*opus_bitrate:\s*)\d+',
-                        rf'\g<1>{bitrate_value}',
-                        content,
-                        flags=re.MULTILINE,
-                    )
-                else:
-                    content = re.sub(
-                        r'(audio:\s*\n(?:\s+\S.*\n)*)',
-                        lambda m: m.group(0).rstrip('\n') + f'\n  opus_bitrate: {bitrate_value}\n',
-                        content
-                    )
-
-                with open(self._config_file, 'w', encoding='utf-8') as f:
-                    f.write(content)
-
-                logger.info(f"Opus 码率已保存: {bitrate_value}")
-            except Exception as e:
-                logger.error(f"保存 Opus 码率失败: {e}")
+        bitrate_value = self.audio.opus_bitrate
+        
+        pattern = r'^(\s*opus_bitrate:\s*)\d+'
+        replacement = rf'\g<1>{bitrate_value}'
+        append_template = f'\n  opus_bitrate: {bitrate_value}\n' if 'opus_bitrate:' not in open(self._config_file, 'r', encoding='utf-8').read() else None
+        
+        self._save_config_field('opus_bitrate', pattern, replacement, append_template)
+        logger.info(f"Opus 码率已保存: {bitrate_value}")
 
     def save_tail_tone(self):
         """保存尾音配置到配置文件（保留注释和格式）"""
-        with self._save_lock:
-            try:
-                with open(self._config_file, 'r', encoding='utf-8') as f:
-                    content = f.read()
+        tt = self.tail_tone
+        
+        if 'tail_tone:' in open(self._config_file, 'r', encoding='utf-8').read():
+            # 更新已有配置段
+            def _replace_field(text, key, value):
+                if isinstance(value, bool):
+                    val_str = "true" if value else "false"
+                elif isinstance(value, str):
+                    val_str = f'"{value}"'
+                else:
+                    val_str = str(value)
+                if f'{key}:' in text:
+                    return re.sub(
+                        rf'^(\s*{key}:\s*).+',
+                        rf'\g<1>{val_str}',
+                        text,
+                        flags=re.MULTILINE,
+                    )
+                return text
 
-                tt = self.tail_tone
-
-                if 'tail_tone:' in content:
-                    # 更新已有配置段
-                    def _replace_field(text, key, value):
-                        if isinstance(value, bool):
-                            val_str = "true" if value else "false"
-                        elif isinstance(value, str):
-                            val_str = f'"{value}"'
-                        else:
-                            val_str = str(value)
-                        if f'{key}:' in text:
-                            return re.sub(
-                                rf'^(\s*{key}:\s*).+',
-                                rf'\g<1>{val_str}',
-                                text,
-                                flags=re.MULTILINE,
-                            )
-                        return text
+            with self._save_lock:
+                try:
+                    with open(self._config_file, 'r', encoding='utf-8') as f:
+                        content = f.read()
 
                     content = _replace_field(content, 'enabled', tt.enabled)
                     content = _replace_field(content, 'tail_type', tt.tail_type)
                     content = _replace_field(content, 'custom_file', tt.custom_file)
                     content = _replace_field(content, 'mdc_id', tt.mdc_id)
                     content = _replace_field(content, 'amplitude', tt.amplitude)
-                else:
-                    # 在文件末尾追加
-                    block = (
-                        f'\ntail_tone:\n'
-                        f'  enabled: {"true" if tt.enabled else "false"}\n'
-                        f'  tail_type: "{tt.tail_type}"\n'
-                        f'  custom_file: "{tt.custom_file}"\n'
-                        f'  mdc_id: {tt.mdc_id}\n'
-                        f'  amplitude: {tt.amplitude}\n'
-                    )
-                    content = content.rstrip('\n') + block
 
-                with open(self._config_file, 'w', encoding='utf-8') as f:
-                    f.write(content)
-
-                logger.info(f"尾音配置已保存: type={tt.tail_type}, enabled={tt.enabled}")
-            except Exception as e:
-                logger.error(f"保存尾音配置失败: {e}")
+                    with open(self._config_file, 'w', encoding='utf-8') as f:
+                        f.write(content)
+                except Exception as e:
+                    logger.error(f"保存尾音配置失败: {e}")
+        else:
+            # 在文件末尾追加
+            block = (
+                f'\ntail_tone:\n'
+                f'  enabled: {"true" if tt.enabled else "false"}\n'
+                f'  tail_type: "{tt.tail_type}"\n'
+                f'  custom_file: "{tt.custom_file}"\n'
+                f'  mdc_id: {tt.mdc_id}\n'
+                f'  amplitude: {tt.amplitude}\n'
+            )
+            with self._save_lock:
+                try:
+                    with open(self._config_file, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    with open(self._config_file, 'w', encoding='utf-8') as f:
+                        f.write(content.rstrip('\n') + block)
+                except Exception as e:
+                    logger.error(f"保存尾音配置失败: {e}")
+        
+        logger.info(f"尾音配置已保存: type={tt.tail_type}, enabled={tt.enabled}")
 
     def save_current_server(self):
         """保存当前服务器索引到配置文件（保留注释和格式）"""
-        with self._save_lock:
-            try:
-                with open(self._config_file, 'r', encoding='utf-8') as f:
-                    content = f.read()
-
-                idx = self.current_server_index
-                if 'current_server:' in content:
-                    content = re.sub(
-                        r'^(\s*current_server:\s*)\d+',
-                        rf'\g<1>{idx}',
-                        content,
-                        flags=re.MULTILINE,
-                    )
-                else:
-                    # 在文件末尾追加
-                    content = content.rstrip('\n') + f'\ncurrent_server: {idx}\n'
-
-                with open(self._config_file, 'w', encoding='utf-8') as f:
-                    f.write(content)
-
-                logger.info(f"当前服务器索引已保存: {idx}")
-            except Exception as e:
-                logger.error(f"保存服务器索引失败: {e}")
+        idx = self.current_server_index
+        
+        pattern = r'^(\s*current_server:\s*)\d+'
+        replacement = rf'\g<1>{idx}'
+        append_template = f'\ncurrent_server: {idx}\n' if 'current_server:' not in open(self._config_file, 'r', encoding='utf-8').read() else None
+        
+        self._save_config_field('current_server', pattern, replacement, append_template)
+        logger.info(f"当前服务器索引已保存: {idx}")
 
     def get_current_server(self) -> Optional[ServerInfo]:
         """获取当前服务器信息"""

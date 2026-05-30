@@ -130,6 +130,7 @@ def _run_cli(args):
             room.handle_group_response(msg.get('data', b''))
         else:
             print(f"\n[{msg.get('from', '?')}] {msg.get('content', '')}")
+    
     talk.on_message = _on_msg
     talk.on_voice_data = lambda pcm, info: print(
         f"\r[voice] {info.get('from', '?')}", end='', flush=True)
@@ -146,54 +147,38 @@ def _run_cli(args):
     print(f"编码: {settings.audio.codec}")
     print("\n命令: connect | disconnect | status | send <msg> | rooms | join <id> | loc | codec <g711|opus> | exit\n")
 
+    # 命令映射表
+    commands = {
+        'exit': lambda: False,
+        'connect': lambda: _cmd_connect(talk, location),
+        'disconnect': lambda: _cmd_disconnect(talk, location),
+        'status': lambda: _cmd_status(talk),
+        'rooms': lambda: _cmd_rooms(room),
+        'loc': lambda: _cmd_loc(talk, location),
+    }
+
     while True:
         try:
             cmd = input("> ").strip()
             if not cmd:
                 continue
 
+            # 检查简单命令
             if cmd == 'exit':
                 break
-            elif cmd == 'connect':
-                if talk.start():
-                    print("连接成功")
-                    location.on_send_location = talk.send_location
-                    location.start_auto_report()
-                else:
-                    print("连接失败")
-            elif cmd == 'disconnect':
-                location.stop_auto_report()
-                talk.stop()
-                print("已断开")
-            elif cmd == 'status':
-                print(talk.get_status())
-            elif cmd.startswith('send '):
-                msg = cmd[5:]
-                if talk.send_text_message(msg):
-                    print(f"已发送: {msg}")
-                else:
-                    print("发送失败")
-            elif cmd == 'rooms':
-                room.request_group_list()
+            
+            if cmd in commands:
+                if not commands[cmd]():
+                    continue
+                continue
+
+            # 处理带参数的命令
+            if cmd.startswith('send '):
+                _cmd_send(cmd[5:], talk)
             elif cmd.startswith('join '):
-                try:
-                    gid = int(cmd[5:].strip())
-                    room.join_group(gid)
-                except ValueError:
-                    print("用法: join <房间ID>")
-            elif cmd == 'loc':
-                lat, lng, src = location.get_location()
-                if lat != 0.0 or lng != 0.0:
-                    print(f"位置: {lat:.6f},{lng:.6f} (来源: {src})")
-                    talk.send_location(lat, lng)
-                else:
-                    print("定位失败")
+                _cmd_join(cmd[5:], room)
             elif cmd.startswith('codec '):
-                codec = cmd[6:].strip()
-                if talk.set_codec(codec):
-                    print(f"编码已切换: {codec}")
-                else:
-                    print("切换失败")
+                _cmd_codec(cmd[6:], talk)
             else:
                 print(f"未知命令: {cmd}")
 
@@ -206,6 +191,77 @@ def _run_cli(args):
     location.stop_auto_report()
     talk.stop()
     print("78HAM 客户端已关闭")
+
+
+# 命令处理函数
+def _cmd_connect(talk, location) -> bool:
+    """连接命令"""
+    if talk.start():
+        print("连接成功")
+        location.on_send_location = talk.send_location
+        location.start_auto_report()
+    else:
+        print("连接失败")
+    return True
+
+
+def _cmd_disconnect(talk, location) -> bool:
+    """断开连接命令"""
+    location.stop_auto_report()
+    talk.stop()
+    print("已断开")
+    return True
+
+
+def _cmd_status(talk) -> bool:
+    """状态命令"""
+    print(talk.get_status())
+    return True
+
+
+def _cmd_rooms(room) -> bool:
+    """房间列表命令"""
+    room.request_group_list()
+    return True
+
+
+def _cmd_loc(talk, location) -> bool:
+    """位置命令"""
+    lat, lng, src = location.get_location()
+    if lat != 0.0 or lng != 0.0:
+        print(f"位置: {lat:.6f},{lng:.6f} (来源: {src})")
+        talk.send_location(lat, lng)
+    else:
+        print("定位失败")
+    return True
+
+
+def _cmd_send(msg, talk) -> bool:
+    """发送消息命令"""
+    if talk.send_text_message(msg):
+        print(f"已发送: {msg}")
+    else:
+        print("发送失败")
+    return True
+
+
+def _cmd_join(args, room) -> bool:
+    """加入房间命令"""
+    try:
+        gid = int(args.strip())
+        room.join_group(gid)
+    except ValueError:
+        print("用法: join <房间ID>")
+    return True
+
+
+def _cmd_codec(codec, talk) -> bool:
+    """切换编码命令"""
+    if talk.set_codec(codec):
+        print(f"编码已切换: {codec}")
+    else:
+        print("切换失败")
+    return True
 
 
 if __name__ == "__main__":

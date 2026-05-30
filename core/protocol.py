@@ -9,7 +9,7 @@ import struct
 import time
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Optional
+from typing import Optional, Union
 
 
 class PacketType(IntEnum):
@@ -42,11 +42,12 @@ class DevModel(IntEnum):
 
 def get_default_dev_model() -> int:
     """根据当前平台返回默认设备型号"""
-    if sys.platform == 'win32':
-        return DevModel.WINDOWS
-    elif sys.platform == 'linux':
-        return DevModel.LINUX
-    return DevModel.WINDOWS
+    platform_map = {
+        'win32': DevModel.WINDOWS,
+        'linux': DevModel.LINUX,
+        'darwin': DevModel.WINDOWS,  # macOS 暂用 Windows 标识
+    }
+    return platform_map.get(sys.platform, DevModel.WINDOWS)
 
 
 class TextSubtype:
@@ -80,6 +81,12 @@ PROTOCOL_VERSION = b"NRL2"
 HEADER_SIZE = 48
 DEFAULT_HEARTBEAT_INTERVAL = 2  # 秒（与安卓/小程序一致）
 MAX_TEXT_LENGTH = 1460 - HEADER_SIZE  # 最大文本长度
+
+
+# 呼号验证字符集（预计算，避免重复 ord() 调用）
+_VALID_CALLSIGN_BYTES = frozenset(
+    b for b in (b'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
+)
 
 
 @dataclass
@@ -163,17 +170,26 @@ class NRLPacket:
                 f"data_len={len(self.data)})")
 
 
-def is_valid_callsign(callsign) -> bool:
+def is_valid_callsign(callsign: Union[str, bytes, None]) -> bool:
     """验证呼号格式，与服务端 IsCallSign 保持一致
 
     呼号只能包含大写字母 A-Z 和数字 0-9
+    
+    Args:
+        callsign: 呼号字符串或字节串
+        
+    Returns:
+        呼号是否有效
     """
     if not callsign:
         return False
+    
     # 统一转为 bytes 处理
     if isinstance(callsign, str):
-        callsign = callsign.encode('ascii', errors='ignore')
-    for b in callsign:
-        if not ((ord('A') <= b <= ord('Z')) or (ord('0') <= b <= ord('9'))):
+        try:
+            callsign = callsign.encode('ascii')
+        except UnicodeEncodeError:
             return False
-    return True
+    
+    # 使用预计算的字符集进行快速验证
+    return all(b in _VALID_CALLSIGN_BYTES for b in callsign)

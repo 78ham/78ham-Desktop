@@ -31,6 +31,12 @@ class UdpClient:
     - 自动重连
     """
 
+    # 配置常量
+    MAX_BUFFER_SIZE = 65535
+    MAX_CONSECUTIVE_ERRORS = 5
+    MAX_HEARTBEAT_FAILURES = 3
+    THREAD_JOIN_TIMEOUT = 3.0
+
     def __init__(self, settings: Settings, connection_mgr: ConnectionManager):
         self.settings = settings
         self.connection_mgr = connection_mgr
@@ -70,14 +76,10 @@ class UdpClient:
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._socket.setblocking(False)
 
-            # 校验 buffer_size 合理性
-            buf_size = min(self.settings.network.buffer_size, 65535)
-
+            # 设置接收缓冲区
+            buf_size = min(self.settings.network.buffer_size, self.MAX_BUFFER_SIZE)
             try:
-                self._socket.setsockopt(
-                    socket.SOL_SOCKET, socket.SO_RCVBUF,
-                    min(self.settings.network.buffer_size, 65535)
-                )
+                self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, buf_size)
             except OSError:
                 logger.warning("设置接收缓冲区失败，使用默认配置")
 
@@ -191,7 +193,6 @@ class UdpClient:
     def _receive_loop(self):
         """接收数据循环（使用 select 避免忙等）"""
         consecutive_errors = 0
-        max_errors = 5
 
         while self._running:
             try:
@@ -236,8 +237,8 @@ class UdpClient:
                     consecutive_errors += 1
 
             # 连续错误达到上限，尝试重连
-            if consecutive_errors >= max_errors:
-                logger.error(f"连续接收错误达到 {max_errors} 次，尝试重连")
+            if consecutive_errors >= self.MAX_CONSECUTIVE_ERRORS:
+                logger.error(f"连续接收错误达到 {self.MAX_CONSECUTIVE_ERRORS} 次，尝试重连")
                 consecutive_errors = 0
                 self._attempt_reconnect()
 
@@ -247,7 +248,6 @@ class UdpClient:
         ticks_per_hb = max(1, int(self.settings.network.heartbeat_interval / poll_interval))
         tick = 0
         failures = 0
-        max_failures = 3
 
         while self._running:
             try:
@@ -255,7 +255,7 @@ class UdpClient:
                     if self.connection_mgr.is_connected:
                         if not self._send_heartbeat():
                             failures += 1
-                            if failures >= max_failures:
+                            if failures >= self.MAX_HEARTBEAT_FAILURES:
                                 logger.warning("心跳失败次数过多，标记离线")
                                 self.connection_mgr.state = ConnectionState.DISCONNECTED
                                 failures = 0
@@ -269,7 +269,7 @@ class UdpClient:
             except Exception as e:
                 logger.error(f"心跳错误: {e}")
                 failures += 1
-                if failures >= max_failures:
+                if failures >= self.MAX_HEARTBEAT_FAILURES:
                     self.connection_mgr.state = ConnectionState.DISCONNECTED
                     failures = 0
                 tick = 0
@@ -299,10 +299,8 @@ class UdpClient:
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._socket.setblocking(False)
             try:
-                self._socket.setsockopt(
-                    socket.SOL_SOCKET, socket.SO_RCVBUF,
-                    min(self.settings.network.buffer_size, 65535)
-                )
+                buf_size = min(self.settings.network.buffer_size, self.MAX_BUFFER_SIZE)
+                self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, buf_size)
             except OSError:
                 pass
 
@@ -318,7 +316,7 @@ class UdpClient:
         self._running = False
         for t in (self._receive_thread, self._heartbeat_thread):
             if t and t.is_alive():
-                t.join(timeout=3.0)
+                t.join(timeout=self.THREAD_JOIN_TIMEOUT)
         self._receive_thread = None
         self._heartbeat_thread = None
 

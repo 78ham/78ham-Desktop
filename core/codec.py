@@ -60,7 +60,7 @@ class VoiceCodec(ABC):
 
 # ==================== G.711 A-law ====================
 
-# 预计算函数
+# 预计算查找表（模块加载时一次性生成）
 def _alaw2linear(code: int) -> int:
     """A-law 解码到线性 PCM"""
     code ^= 0x55
@@ -73,10 +73,7 @@ def _alaw2linear(code: int) -> int:
     else:
         sample = ((quant << 1) | 0x21) << (seg - 1)
 
-    if sign != 0:
-        return sample << 3
-    else:
-        return -(sample << 3)
+    return (sample << 3) if sign == 0 else -(sample << 3)
 
 
 def _linear2alaw(sample: int) -> int:
@@ -107,8 +104,8 @@ def _linear2alaw(sample: int) -> int:
     return (sign | (seg << 4) | mant) ^ 0x55
 
 
-# 预计算查找表
-_DECODE_TABLE = tuple(_alaw2linear(i) for i in range(256))
+# 预计算查找表（加速编解码）
+_ALAW_DECODE_TABLE = tuple(_alaw2linear(i) for i in range(256))
 
 
 class G711Codec(VoiceCodec):
@@ -146,19 +143,20 @@ class G711Codec(VoiceCodec):
 
         try:
             sample_count = len(pcm_data) // 2
+            # 使用 struct 解包并编码
             samples = struct.unpack(f'<{sample_count}h', pcm_data[:sample_count * 2])
-            encoded = bytearray(_linear2alaw(s) for s in samples)
+            encoded = bytes(_linear2alaw(s) for s in samples)
         except Exception as e:
             logger.debug(f"G.711 编码错误: {e}")
             return bytes([_linear2alaw(0)] * self.FRAME_SIZE)
 
         # 确保输出正好是 160 字节
         if len(encoded) > self.FRAME_SIZE:
-            return bytes(encoded[:self.FRAME_SIZE])
+            return encoded[:self.FRAME_SIZE]
         elif len(encoded) < self.FRAME_SIZE:
-            encoded.extend([self.SILENCE_VALUE] * (self.FRAME_SIZE - len(encoded)))
+            return encoded + bytes([self.SILENCE_VALUE] * (self.FRAME_SIZE - len(encoded)))
 
-        return bytes(encoded)
+        return encoded
 
     def decode(self, alaw_data: bytes) -> bytes:
         """G.711 A-law 数据解码为 PCM
@@ -166,12 +164,12 @@ class G711Codec(VoiceCodec):
         输入: 160 字节 A-law
         输出: 320 字节 PCM (16-bit LE)
         """
-        if not alaw_data or len(alaw_data) == 0:
+        if not alaw_data:
             return b""
 
         try:
-            table = _DECODE_TABLE
-            return struct.pack(f'<{len(alaw_data)}h', *(table[b] for b in alaw_data))
+            # 使用预计算查找表加速解码
+            return struct.pack(f'<{len(alaw_data)}h', *(_ALAW_DECODE_TABLE[b] for b in alaw_data))
         except Exception as e:
             logger.debug(f"G.711 解码错误: {e}, 数据长度: {len(alaw_data)}")
             return b""
@@ -251,6 +249,7 @@ class OpusCodec(VoiceCodec):
 
     DEFAULT_BITRATE = 36000
     COMPLEXITY = 10
+    PCM_FRAME_BYTES = 640  # 16kHz * 20ms * 2bytes
 
     def __init__(self, bitrate: int = DEFAULT_BITRATE):
         if not _OPUS_AVAILABLE:
@@ -290,9 +289,10 @@ class OpusCodec(VoiceCodec):
         输入: 640 字节 PCM (320 samples * 2 bytes @ 16kHz = 20ms)
         输出: Opus 编码数据 (变长, 通常 40-80 字节)
         """
-        expected = self.pcm_frame_bytes
         if not pcm_data:
-            pcm_data = b'\x00' * expected
+            pcm_data = b'\x00' * self.PCM_FRAME_BYTES
+        
+        expected = self.PCM_FRAME_BYTES
         if len(pcm_data) < expected:
             pcm_data = pcm_data + b'\x00' * (expected - len(pcm_data))
         elif len(pcm_data) > expected:
@@ -314,7 +314,7 @@ class OpusCodec(VoiceCodec):
         输出: 640 字节 PCM (320 samples * 2 bytes @ 16kHz = 20ms)
         """
         if not opus_data:
-            return b'\x00' * self.pcm_frame_bytes
+            return b'\x00' * self.PCM_FRAME_BYTES
 
         try:
             if self._backend == "opuslib":
@@ -323,7 +323,7 @@ class OpusCodec(VoiceCodec):
                 return self._decode_av(opus_data)
         except Exception as e:
             logger.debug(f"Opus 解码错误: {e}, 数据长度={len(opus_data)}")
-            return b'\x00' * self.pcm_frame_bytes
+            return b'\x00' * self.PCM_FRAME_BYTES
 
     def _encode_av(self, pcm_data: bytes) -> bytes:
         """PyAV 后端编码"""
@@ -389,9 +389,9 @@ class OpusCodec(VoiceCodec):
 
         new_frames = []
         offset = 0
-        while offset + self.pcm_frame_bytes <= len(all_pcm):
-            new_frames.append(bytes(all_pcm[offset:offset + self.pcm_frame_bytes]))
-            offset += self.pcm_frame_bytes
+        while offset + self.PCM_FRAME_BYTES <= len(all_pcm):
+            new_frames.append(bytes(all_pcm[offset:offset + self.PCM_FRAME_BYTES]))
+            offset += self.PCM_FRAME_BYTES
 
         self._dec_pcm_frames = new_frames
         self._dec_frame_cursor = 1
@@ -399,7 +399,7 @@ class OpusCodec(VoiceCodec):
         if self._dec_pcm_frames:
             return self._dec_pcm_frames[0]
 
-        return b'\x00' * self.pcm_frame_bytes
+        return b'\x00' * self.PCM_FRAME_BYTES
 
     @staticmethod
     def is_available() -> bool:

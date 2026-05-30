@@ -30,13 +30,18 @@ class TalkService:
     - 提供回调接口供 UI 层使用
     """
 
+    # 配置常量
+    VOICE_TIMEOUT = 0.5  # 语音播放超时（秒）
+    MAX_RECONNECT_ATTEMPTS = 5
+    RECONNECT_DELAY = 2.0
+
     def __init__(self, settings: Settings):
         self.settings = settings
 
         # 网络层
         self.connection_mgr = ConnectionManager(
-            max_reconnect_attempts=5,
-            reconnect_delay=2.0,
+            max_reconnect_attempts=self.MAX_RECONNECT_ATTEMPTS,
+            reconnect_delay=self.RECONNECT_DELAY,
         )
         self.udp_client = UdpClient(settings, self.connection_mgr)
         self.udp_client.on_packet_received = self._on_packet_received
@@ -59,7 +64,7 @@ class TalkService:
         self.is_transmitting = False
         self._is_receiving = False
         self._last_voice_time: float = 0.0
-        self._voice_timeout: float = 0.5  # 语音播放超时（秒）
+        self._voice_timeout: float = self.VOICE_TIMEOUT
         self._playback_check_thread: Optional[threading.Thread] = None
 
         # 统计（线程安全）
@@ -271,7 +276,7 @@ class TalkService:
 
     def _handle_voice(self, packet: NRLPacket):
         """处理 G.711 语音包"""
-        if not packet.data or len(packet.data) == 0:
+        if not packet.data:
             return
         pcm = self._g711_decoder.decode(packet.data)
         if pcm:
@@ -287,7 +292,7 @@ class TalkService:
 
     def _handle_server_voice(self, packet: NRLPacket):
         """处理服务器互联语音包（Type=9, G.711）"""
-        if not packet.data or len(packet.data) == 0:
+        if not packet.data:
             return
         pcm = self._g711_decoder.decode(packet.data)
         if pcm:
@@ -299,7 +304,7 @@ class TalkService:
             }
             self._deliver_voice(pcm, packet, extra)
 
-    def _deliver_voice(self, pcm_data: bytes, packet: NRLPacket, extra: dict = None):
+    def _deliver_voice(self, pcm_data: bytes, packet: NRLPacket, extra: Optional[Dict] = None):
         """分发解码后的语音数据"""
         with self._ptt_lock:
             self._last_voice_time = time.time()
