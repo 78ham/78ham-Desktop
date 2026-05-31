@@ -232,7 +232,7 @@ class UdpClient:
                 logger.error(f"接收错误: {e}")
                 consecutive_errors += 1
             except Exception as e:
-                if self._running:
+                if self.is_running:
                     logger.error(f"接收异常: {e}")
                     consecutive_errors += 1
 

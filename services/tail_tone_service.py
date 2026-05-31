@@ -65,31 +65,37 @@ class TailToneService:
         # 当前缓存对应的编码格式
         self._cached_codec = ""
 
+        # 保护缓存与配置字段的并发访问（configure/on_codec_changed 可能在
+        # UI 线程触发，get_tail_tone_frames 在发送线程触发）
+        self._lock = threading.RLock()
+
     # ==================== 配置 ====================
 
     def configure(self, enabled: bool, tail_type: str = "default",
                   custom_file: str = "", mdc_id: int = 0,
                   amplitude: float = 0.2):
         """更新尾音配置"""
-        changed = (
-            self._enabled != enabled or
-            self._tail_type != tail_type or
-            self._custom_file != custom_file or
-            self._mdc_id != mdc_id or
-            abs(self._amplitude - amplitude) >= 0.001
-        )
-        if changed:
-            self._enabled = enabled
-            self._tail_type = tail_type
-            self._custom_file = custom_file
-            self._mdc_id = mdc_id
-            self._amplitude = amplitude
-            self._cache_dirty = True
-            logger.info(f"尾音配置更新: type={tail_type}, enabled={enabled}")
+        with self._lock:
+            changed = (
+                self._enabled != enabled or
+                self._tail_type != tail_type or
+                self._custom_file != custom_file or
+                self._mdc_id != mdc_id or
+                abs(self._amplitude - amplitude) >= 0.001
+            )
+            if changed:
+                self._enabled = enabled
+                self._tail_type = tail_type
+                self._custom_file = custom_file
+                self._mdc_id = mdc_id
+                self._amplitude = amplitude
+                self._cache_dirty = True
+                logger.info(f"尾音配置更新: type={tail_type}, enabled={enabled}")
 
     def on_codec_changed(self):
         """编码格式变化时清除缓存"""
-        self._cache_dirty = True
+        with self._lock:
+            self._cache_dirty = True
 
     def get_mdc_id(self) -> int:
         """获取 MDC ID（为 0 时回退到 DMR ID）"""
@@ -112,30 +118,31 @@ class TailToneService:
         codec = self._get_codec()
         frame_size = self._get_frame_size()
 
-        # 检查缓存是否有效
-        if not self._cache_dirty and self._cached_codec == codec:
-            return self._cached_frames
+        with self._lock:
+            # 检查缓存是否有效
+            if not self._cache_dirty and self._cached_codec == codec:
+                return self._cached_frames
 
-        # 生成/加载尾音
-        pcm_8k = self._load_tail_pcm()
-        if not pcm_8k:
-            self._cached_frames = []
+            # 生成/加载尾音
+            pcm_8k = self._load_tail_pcm()
+            if not pcm_8k:
+                self._cached_frames = []
+                self._cache_dirty = False
+                self._cached_codec = codec
+                return []
+
+            # Opus 模式需要重采样到 16kHz
+            if codec == "opus":
+                pcm = self._resample_8k_to_16k(pcm_8k)
+            else:
+                pcm = pcm_8k
+
+            # 分帧
+            frames = self._split_into_frames(pcm, frame_size)
+
+            self._cached_frames = frames
             self._cache_dirty = False
             self._cached_codec = codec
-            return []
-
-        # Opus 模式需要重采样到 16kHz
-        if codec == "opus":
-            pcm = self._resample_8k_to_16k(pcm_8k)
-        else:
-            pcm = pcm_8k
-
-        # 分帧
-        frames = self._split_into_frames(pcm, frame_size)
-
-        self._cached_frames = frames
-        self._cache_dirty = False
-        self._cached_codec = codec
 
         logger.info(f"尾音已准备: {len(frames)} 帧, codec={codec}, "
                     f"frame_size={frame_size}")
@@ -302,6 +309,8 @@ class TailToneService:
             return b''
 
         num_samples = len(pcm_8k) // 2
+        if num_samples == 0:
+            return b''
         samples = struct.unpack(f'<{num_samples}h', pcm_8k)
         out = []
 

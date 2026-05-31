@@ -145,13 +145,18 @@ class TalkService:
             if not self.is_connected or not self.is_transmitting:
                 return False
 
+        # 在锁内快照编码器与编码类型，保证二者一致：set_codec 会同时替换
+        # _tx_codec 与 settings.audio.codec，若不快照可能读到不匹配的组合
+        with self._codec_lock:
+            tx_codec = self._tx_codec
+            codec_type = self.settings.audio.codec
+
         # 编码
-        encoded = self._tx_codec.encode(pcm_data)
+        encoded = tx_codec.encode(pcm_data)
         if not encoded:
             return False
 
         # 创建数据包
-        codec_type = self.settings.audio.codec
         if codec_type == 'opus':
             packet = self._packet_factory.create_opus_voice(
                 self.settings.device.callsign,
@@ -211,8 +216,10 @@ class TalkService:
 
     def set_codec(self, codec_type: str) -> bool:
         """运行时切换发射编码格式"""
+        with self._ptt_lock:
+            transmitting = self.is_transmitting
         logger.debug(f"set_codec: 请求={codec_type}, 当前={self.settings.audio.codec}, "
-                     f"opus可用={OpusCodec.is_available()}, 发射中={self.is_transmitting}")
+                     f"opus可用={OpusCodec.is_available()}, 发射中={transmitting}")
         if codec_type not in ("g711", "opus"):
             return False
         if codec_type == self.settings.audio.codec:
@@ -221,7 +228,9 @@ class TalkService:
             logger.error("Opus 不可用 — opuslib/av 均未加载成功")
             return False
         with self._codec_lock:
-            if self.is_transmitting:
+            with self._ptt_lock:
+                transmitting = self.is_transmitting
+            if transmitting:
                 logger.warning("发射中无法切换编码 — 正在发射")
                 return False
             self.settings.audio.codec = codec_type
@@ -237,14 +246,17 @@ class TalkService:
             return False
         if self.settings.audio.opus_bitrate == bitrate:
             return True
-        if self.is_transmitting:
+        with self._ptt_lock:
+            transmitting = self.is_transmitting
+        if transmitting:
             logger.warning("发射中无法切换码率")
             return False
 
-        self.settings.audio.opus_bitrate = bitrate
-        if isinstance(self._tx_codec, OpusCodec):
-            self._tx_codec = self._create_codec('opus')
-        self.settings.save_opus_bitrate()
+        with self._codec_lock:
+            self.settings.audio.opus_bitrate = bitrate
+            if isinstance(self._tx_codec, OpusCodec):
+                self._tx_codec = self._create_codec('opus')
+            self.settings.save_opus_bitrate()
         logger.info(f"Opus 码率已切换: {bitrate} bps")
         return True
 

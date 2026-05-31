@@ -420,7 +420,8 @@ class AudioHandler:
         with self.lock:
             if not self.is_recording:
                 return (None, pyaudio.paContinue)
-            self.record_buffer.append(in_data)
+            # 注：不再累积 record_buffer。录音 PCM 通过 audio_callback 实时
+            # 逐帧消费，整段录音无消费方，累积只会导致长时间发射时内存无界增长。
 
         # 处理语音数据缓存 - 按PCM帧大小管理
         pending_callbacks = []
@@ -438,7 +439,8 @@ class AudioHandler:
             # 当缓存达到或超过一帧PCM时，立即发送
             while len(self.voice_data_cache) >= frame_size:
                 send_data = bytes(self.voice_data_cache[:frame_size])
-                self.voice_data_cache = self.voice_data_cache[frame_size:]
+                # 原地删除已消费帧，避免每帧重新分配并拷贝整个 bytearray（O(n)）
+                del self.voice_data_cache[:frame_size]
                 self.last_voice_send_time = current_time
 
                 if self.audio_callback:
@@ -502,7 +504,10 @@ class AudioHandler:
                 remaining_data = combined_data[expected_length:]
                 if remaining_data:
                     with self.lock:
-                        self.play_buffer.appendleft(remaining_data)
+                        # 重新检查播放状态：两次加锁间隙 stop_playback 可能已将
+                        # play_buffer 替换为新 deque，避免把残留数据插入废弃缓冲
+                        if self.is_playing and not self.playback_stop_flag:
+                            self.play_buffer.appendleft(remaining_data)
                 return (result_data, pyaudio.paContinue)
             else:
                 silence = b'\x00' * (expected_length - len(combined_data))

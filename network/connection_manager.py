@@ -65,12 +65,14 @@ class ConnectionManager:
 
     def mark_packet_received(self):
         """标记收到数据包（用于超时检测）"""
-        self._last_packet_time = time.time()
-        self._reconnect_count = 0
+        with self._lock:
+            self._last_packet_time = time.time()
+            self._reconnect_count = 0
 
     def should_reconnect(self) -> bool:
         """是否应该尝试重连"""
-        return self._reconnect_count < self.max_reconnect_attempts
+        with self._lock:
+            return self._reconnect_count < self.max_reconnect_attempts
 
     def begin_reconnect(self) -> bool:
         """开始一次重连尝试
@@ -78,23 +80,32 @@ class ConnectionManager:
         Returns:
             True 如果可以重连，False 如果已达到最大重试次数
         """
-        if self._reconnect_count >= self.max_reconnect_attempts:
+        with self._lock:
+            if self._reconnect_count >= self.max_reconnect_attempts:
+                can_reconnect = False
+            else:
+                self._reconnect_count += 1
+                can_reconnect = True
+            count = self._reconnect_count
+
+        if not can_reconnect:
             logger.error(f"重连次数已达上限 ({self.max_reconnect_attempts})")
             self.state = ConnectionState.DISCONNECTED
             return False
 
-        self._reconnect_count += 1
         self.state = ConnectionState.RECONNECTING
-        logger.info(f"重连尝试 {self._reconnect_count}/{self.max_reconnect_attempts}")
+        logger.info(f"重连尝试 {count}/{self.max_reconnect_attempts}")
         return True
 
     def reconnect_succeeded(self):
         """重连成功"""
-        self._reconnect_count = 0
+        with self._lock:
+            self._reconnect_count = 0
         self.state = ConnectionState.CONNECTED
 
     def reset(self):
         """重置状态"""
-        self._reconnect_count = 0
-        self._last_packet_time = 0.0
+        with self._lock:
+            self._reconnect_count = 0
+            self._last_packet_time = 0.0
         self.state = ConnectionState.DISCONNECTED

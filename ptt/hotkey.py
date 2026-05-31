@@ -37,6 +37,13 @@ class PttController:
         self._release_hook = None
         self._pynput_listener = None
 
+    def _safe_callback(self, callback: Callable[[], None]):
+        """在热键钩子线程中安全调用回调，隔离异常"""
+        try:
+            callback()
+        except Exception as e:
+            logger.error(f"PTT 回调错误: {e}")
+
     def register(self, key: str = "f5") -> bool:
         """注册全局热键
 
@@ -96,11 +103,11 @@ class PttController:
 
             def on_press(k):
                 if k == target_key:
-                    self._on_press()
+                    self._safe_callback(self._on_press)
 
             def on_release(k):
                 if k == target_key:
-                    self._on_release()
+                    self._safe_callback(self._on_release)
 
             self._pynput_listener = pynput_keyboard.Listener(
                 on_press=on_press,

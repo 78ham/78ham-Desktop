@@ -102,8 +102,25 @@ class MDC1200Encoder:
         self._data: Optional[bytearray] = None
         self._loaded = 0
 
+    @staticmethod
+    def _validate_unit_id(unit_id: int) -> int:
+        """校验 unit_id 是否在 MDC1200 的 16 位范围内。
+
+        MDC1200 协议的 unit ID 字段仅 16 位。DMR ID 通常为 24 位，
+        若直接传入会被静默截断为低 16 位，导致 MDC ID 与实际不符。
+        此处显式告警并返回截断后的值，避免静默错误。
+        """
+        if unit_id < 0 or unit_id > 0xFFFF:
+            truncated = unit_id & 0xFFFF
+            logger.warning(
+                f"MDC1200 unit_id {unit_id} 超出 16 位范围，已截断为 {truncated}"
+            )
+            return truncated
+        return unit_id
+
     def set_packet(self, op: int, arg: int, unit_id: int) -> bool:
         """设置单包数据"""
+        unit_id = self._validate_unit_id(unit_id)
         self._data = bytearray(26)
         self._data[:12] = self.LEADER
         self._data[12] = op
@@ -118,6 +135,7 @@ class MDC1200Encoder:
                           extra0: int, extra1: int,
                           extra2: int, extra3: int) -> bool:
         """设置双包数据"""
+        unit_id = self._validate_unit_id(unit_id)
         self._data = bytearray(40)
         self._data[:12] = self.LEADER
         self._data[12] = op

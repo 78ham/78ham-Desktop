@@ -70,6 +70,7 @@ class App(ctk.CTk):
         self._voice_recv_start: float = 0.0            # 语音接收开始时间
         self._voice_recv_info: dict = {}               # 当前语音发送者信息
         self._voice_send_start: float = 0.0            # 本机语音发送开始时间
+        self._ptt_active = False                       # PTT 发射中标志（热键/鼠标互斥）
 
         # 构建 UI
         self._build_ui()
@@ -329,10 +330,19 @@ class App(ctk.CTk):
         self._update_ui_state()
 
     def _on_ptt_press(self):
-        """PTT 按下"""
-        if not self._connected:
+        """PTT 按下（可能从热键钩子线程调用，切回主线程执行 UI 操作）"""
+        self.after(0, self._do_ptt_press)
+
+    def _on_ptt_release(self):
+        """PTT 松开（可能从热键钩子线程调用，切回主线程执行 UI 操作）"""
+        self.after(0, self._do_ptt_release)
+
+    def _do_ptt_press(self):
+        """PTT 按下实际处理（主线程）"""
+        if not self._connected or self._ptt_active:
             return
         if self._talk.start_transmitting():
+            self._ptt_active = True
             self._ptt_button.set_transmitting()
             self._voice_send_start = time.time()
             try:
@@ -340,13 +350,15 @@ class App(ctk.CTk):
             except Exception as e:
                 logger.error(f"启动录音失败: {e}")
                 self._talk.stop_transmitting()
+                self._ptt_active = False
                 self._voice_send_start = 0.0
                 self._ptt_button.set_idle()
 
-    def _on_ptt_release(self):
-        """PTT 松开"""
-        if not self._connected:
+    def _do_ptt_release(self):
+        """PTT 松开实际处理（主线程）"""
+        if not self._connected or not self._ptt_active:
             return
+        self._ptt_active = False
         self._audio.stop_recording()
         # 发送尾音（is_transmitting 仍为 True 时调用）
         self._send_tail_tone()
