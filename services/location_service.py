@@ -4,7 +4,6 @@
 多级定位（Windows GPS → IP 地理定位 → 默认配置）和自动上报。
 """
 import os
-import time
 import logging
 import threading
 from typing import Optional, Callable, Tuple
@@ -25,6 +24,7 @@ class LocationService:
     def __init__(self, settings: Settings):
         self.settings = settings
         self._running = threading.Event()
+        self._stop_event = threading.Event()
         self._report_thread: Optional[threading.Thread] = None
 
         # 回调：发送位置消息
@@ -61,6 +61,7 @@ class LocationService:
         if self._report_thread and self._report_thread.is_alive():
             return
         self._running.set()
+        self._stop_event.clear()
         self._report_thread = threading.Thread(
             target=self._report_loop, daemon=True, name="loc-report")
         self._report_thread.start()
@@ -69,6 +70,7 @@ class LocationService:
     def stop_auto_report(self):
         """停止自动位置上报"""
         self._running.clear()
+        self._stop_event.set()
         if self._report_thread and self._report_thread.is_alive():
             self._report_thread.join(timeout=3.0)
 
@@ -78,16 +80,10 @@ class LocationService:
         self._do_report()
 
         while self._running.is_set():
-            # 拆分 sleep 以便快速退出
-            poll_interval = 0.5
-            ticks = max(1, int(self.settings.location.report_interval / poll_interval))
-            for _ in range(ticks):
-                if not self._running.is_set():
-                    return
-                time.sleep(poll_interval)
-
-            if self._running.is_set():
-                self._do_report()
+            interval = max(1, self.settings.location.report_interval)
+            if self._stop_event.wait(interval):
+                return
+            self._do_report()
 
     def _do_report(self):
         """执行一次位置上报"""

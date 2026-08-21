@@ -1,4 +1,5 @@
-pyaudio==0.2.11
+pyaudiowpatch==0.2.12.8; sys_platform == 'win32'
+pyaudio==0.2.11; sys_platform != 'win32'
 pyyaml==6.0.1
 numpy==1.24.3
 customtkinter==5.2.2

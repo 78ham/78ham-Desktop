@@ -118,7 +118,7 @@ class G711Codec(VoiceCodec):
     """
 
     FRAME_SIZE = 160        # 编码后字节数
-    SILENCE_VALUE = 0x80    # A-law 静音值（对应 PCM 0 附近）
+    SILENCE_VALUE = 0xD5    # 标准 A-law 零电平码
 
     @property
     def sample_rate(self) -> int:
@@ -251,25 +251,98 @@ class OpusCodec(VoiceCodec):
     COMPLEXITY = 10
     PCM_FRAME_BYTES = 640  # 16kHz * 20ms * 2bytes
 
-    def __init__(self, bitrate: int = DEFAULT_BITRATE):
+    # 全档位码率：从窄带到宽带语音场景（单位 bps）
+    BITRATE_PRESETS = {
+        "窄带 6kbps": 6000,
+        "窄带 8kbps": 8000,
+        "窄带 12kbps": 12000,
+        "窄带 16kbps": 16000,
+        "窄带 20kbps": 20000,
+        "宽带 24kbps": 24000,
+        "宽带 32kbps": 32000,
+        "宽带 36kbps": 36000,
+        "宽带 48kbps": 48000,
+        "宽带 64kbps": 64000,
+        "超宽带 96kbps": 96000,
+        "超宽带 128kbps": 128000,
+        "全频段 256kbps": 256000,
+        "全频段 510kbps": 510000,
+    }
+
+    # 有效码率范围（Opus 编码器实际支持）
+    MIN_BITRATE = 6000
+    MAX_BITRATE = 510000
+
+    def __init__(self, bitrate: int = DEFAULT_BITRATE, *, vbr: bool = True, complexity: int = 10):
         if not _OPUS_AVAILABLE:
             raise ImportError("Opus 不可用，请安装: pip install av 或 pip install opuslib")
 
         self._backend = _OPUS_BACKEND
-        self._bitrate = bitrate
+        self._bitrate = self._clamp_bitrate(bitrate)
+        self._vbr = vbr
+        self._complexity = max(0, min(10, complexity))
 
         if self._backend == "opuslib":
             self._encoder = opuslib.Encoder(16000, 1, opuslib.APPLICATION_VOIP)
             self._decoder = opuslib.Decoder(16000, 1)
-            self._encoder.bitrate = self._bitrate
-            self._encoder.complexity = self.COMPLEXITY
+            self._apply_encoder_settings()
         elif self._backend == "av":
-            self._enc_pts = 0
-            self._dec_ogg_pages = []
-            self._dec_pcm_frames = []
-            self._dec_frame_cursor = 0
+            self._encoder = _av.CodecContext.create('libopus', 'w')
+            self._encoder.sample_rate = 16000
+            self._encoder.layout = 'mono'
+            self._encoder.format = 's16'
+            self._encoder.bit_rate = self._bitrate
+            self._decoder = _av.CodecContext.create('libopus', 'r')
+            self._encoder.open()
+            self._decoder.open()
 
-        logger.info(f"Opus 编解码器初始化成功 (后端: {self._backend})")
+        logger.info(f"Opus 编解码器初始化成功 (后端: {self._backend}, 码率: {self._bitrate} bps)")
+
+    def _apply_encoder_settings(self):
+        """将当前码率/VBR/复杂度等参数同步到底层编码器"""
+        if self._backend == "opuslib":
+            self._encoder.bitrate = self._bitrate
+            self._encoder.vbr = 1 if self._vbr else 0
+            self._encoder.complexity = self._complexity
+
+    @classmethod
+    def _clamp_bitrate(cls, bitrate: int) -> int:
+        """将码率限制在 Opus 有效范围内"""
+        try:
+            bitrate = int(bitrate)
+        except (TypeError, ValueError):
+            bitrate = cls.DEFAULT_BITRATE
+        return max(cls.MIN_BITRATE, min(cls.MAX_BITRATE, bitrate))
+
+    @property
+    def bitrate(self) -> int:
+        """当前编码码率 (bps)"""
+        return self._bitrate
+
+    @bitrate.setter
+    def bitrate(self, value: int):
+        """运行时动态切换码率"""
+        self._bitrate = self._clamp_bitrate(value)
+        self._apply_encoder_settings()
+        logger.info(f"Opus 码率已切换: {self._bitrate} bps")
+
+    @property
+    def vbr(self) -> bool:
+        return self._vbr
+
+    @vbr.setter
+    def vbr(self, value: bool):
+        self._vbr = bool(value)
+        self._apply_encoder_settings()
+
+    @property
+    def complexity(self) -> int:
+        return self._complexity
+
+    @complexity.setter
+    def complexity(self, value: int):
+        self._complexity = max(0, min(10, value))
+        self._apply_encoder_settings()
 
     @property
     def sample_rate(self) -> int:
@@ -282,6 +355,10 @@ class OpusCodec(VoiceCodec):
     @property
     def encoded_frame_bytes(self) -> Optional[int]:
         return None  # 变长编码
+
+    def set_bitrate(self, bitrate: int):
+        """外部统一入口：设置码率"""
+        self.bitrate = bitrate
 
     def encode(self, pcm_data: bytes) -> bytes:
         """PCM → Opus
@@ -326,80 +403,28 @@ class OpusCodec(VoiceCodec):
             return b'\x00' * self.PCM_FRAME_BYTES
 
     def _encode_av(self, pcm_data: bytes) -> bytes:
-        """PyAV 后端编码"""
-        import io
+        """Encode one raw Opus packet, never an Ogg container."""
         import numpy as np  # type: ignore
-
-        buf = io.BytesIO()
-        out = _av.open(buf, mode='w', format='ogg')
-        stream = out.add_stream('libopus', rate=self.sample_rate)
-        stream.layout = 'mono'
-        stream.bit_rate = self._bitrate
-        stream.format = 's16'
-
         samples = np.frombuffer(pcm_data, dtype=np.int16)
         frame = _av.AudioFrame.from_ndarray(
             samples.reshape(1, -1), format='s16', layout='mono'
         )
         frame.rate = self.sample_rate
-        frame.pts = 0
-
-        for pkt in stream.encode(frame):
-            out.mux(pkt)
-        for pkt in stream.encode(None):
-            out.mux(pkt)
-        out.close()
-
-        return buf.getvalue()
+        packets = self._encoder.encode(frame)
+        return bytes(packets[0]) if packets else b''
 
     def _decode_av(self, opus_data: bytes) -> bytes:
-        """PyAV 后端解码"""
-        import io
+        """Decode one raw Opus packet."""
         import numpy as np  # type: ignore
-
-        self._dec_ogg_pages.append(opus_data)
-
-        # 限制缓存大小，防止内存无限增长（保留最近 10 页）
-        if len(self._dec_ogg_pages) > 10:
-            self._dec_ogg_pages = self._dec_ogg_pages[-10:]
-
-        if self._dec_frame_cursor < len(self._dec_pcm_frames):
-            result = self._dec_pcm_frames[self._dec_frame_cursor]
-            self._dec_frame_cursor += 1
-            return result
-
-        combined = b''.join(self._dec_ogg_pages)
-        buf = io.BytesIO(combined)
-        inp = _av.open(buf, mode='r')
-        resampler = _av.AudioResampler(format='s16', layout='mono', rate=self.sample_rate)
-
-        all_pcm = bytearray()
-        for frame in inp.decode():
-            for rf in resampler.resample(frame):
-                arr = rf.to_ndarray()
-                if arr.dtype != np.int16:
-                    arr = arr.astype(np.int16)
-                all_pcm.extend(arr.tobytes())
-        for rf in resampler.resample(None):
-            arr = rf.to_ndarray()
-            if arr.dtype != np.int16:
-                arr = arr.astype(np.int16)
-            all_pcm.extend(arr.tobytes())
-        inp.close()
-
-        new_frames = []
-        offset = 0
-        while offset + self.PCM_FRAME_BYTES <= len(all_pcm):
-            new_frames.append(bytes(all_pcm[offset:offset + self.PCM_FRAME_BYTES]))
-            offset += self.PCM_FRAME_BYTES
-
-        self._dec_pcm_frames = new_frames
-        self._dec_frame_cursor = 1
-
-        if self._dec_pcm_frames:
-            return self._dec_pcm_frames[0]
-
-        return b'\x00' * self.PCM_FRAME_BYTES
+        packet = _av.Packet(opus_data)
+        frames = self._decoder.decode(packet)
+        if not frames:
+            return b'\x00' * self.PCM_FRAME_BYTES
+        samples = frames[0].to_ndarray()
+        if samples.dtype != np.int16:
+            samples = samples.astype(np.int16)
+        pcm = samples.tobytes()
+        return pcm[:self.PCM_FRAME_BYTES].ljust(self.PCM_FRAME_BYTES, b'\x00')
 
     @staticmethod
     def is_available() -> bool:

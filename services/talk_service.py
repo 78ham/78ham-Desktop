@@ -5,11 +5,12 @@
 参考安卓 TalkService 的设计模式。
 """
 import time
+import math
 import logging
 import threading
 from typing import Optional, Callable, Dict, Any
 
-from core.protocol import NRLPacket, PacketType
+from core.protocol import MAX_TEXT_LENGTH, NRLPacket, PacketType
 from core.codec import G711Codec, OpusCodec, VoiceCodec, get_codec
 from core.packet_factory import PacketFactory
 from core.packet_parser import PacketParser
@@ -67,6 +68,7 @@ class TalkService:
         self._last_voice_time: float = 0.0
         self._voice_timeout: float = self.VOICE_TIMEOUT
         self._playback_check_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
 
         # 统计（线程安全）
         self._stats_lock = threading.Lock()
@@ -84,7 +86,11 @@ class TalkService:
 
     def _create_codec(self, codec_type: str) -> VoiceCodec:
         """创建编码器"""
-        codec = get_codec(codec_type, bitrate=self.settings.audio.opus_bitrate)
+        options = (
+            {'bitrate': self.settings.audio.opus_bitrate}
+            if codec_type == 'opus' else {}
+        )
+        codec = get_codec(codec_type, **options)
         if codec is not None:
             return codec
         return G711Codec()
@@ -93,9 +99,15 @@ class TalkService:
 
     def start(self) -> bool:
         """启动服务（连接到服务器）"""
+        if self.udp_client.is_running and self.is_connected:
+            return True
+        self._stop_event.set()
+        if self._playback_check_thread and self._playback_check_thread.is_alive():
+            self._playback_check_thread.join(timeout=1.0)
         result = self.udp_client.connect()
         if result:
             # 启动播放超时检查
+            self._stop_event.clear()
             self._playback_check_thread = threading.Thread(
                 target=self._playback_timeout_loop, daemon=True, name="voice-timeout")
             self._playback_check_thread.start()
@@ -103,6 +115,7 @@ class TalkService:
 
     def stop(self):
         """停止服务"""
+        self._stop_event.set()
         with self._ptt_lock:
             self.is_transmitting = False
             self._is_receiving = False
@@ -164,6 +177,7 @@ class TalkService:
                 self.settings.device.dmr_id,
                 encoded,
                 self.settings.device.model,
+                password=self.settings.get_current_password(),
             )
         else:
             packet = self._packet_factory.create_voice(
@@ -172,6 +186,7 @@ class TalkService:
                 self.settings.device.dmr_id,
                 encoded,
                 self.settings.device.model,
+                password=self.settings.get_current_password(),
             )
 
         if self.udp_client.send_packet(packet):
@@ -191,10 +206,10 @@ class TalkService:
             return False
 
         text_bytes = message.encode('utf-8')
-        max_len = self.settings.network.buffer_size - 48
+        max_len = min(MAX_TEXT_LENGTH, 0xFFFF - 48)
         if len(text_bytes) > max_len:
             logger.warning(f"消息被截断: {len(text_bytes)} > {max_len} 字节")
-            text_bytes = text_bytes[:max_len]
+            text_bytes = text_bytes[:max_len].decode('utf-8', errors='ignore').encode('utf-8')
 
         packet = self._packet_factory.create_text(
             self.settings.device.callsign,
@@ -202,12 +217,15 @@ class TalkService:
             self.settings.device.dmr_id,
             text_bytes,
             self.settings.device.model,
+            password=self.settings.get_current_password(),
         )
         return self.udp_client.send_packet(packet)
 
     def send_location(self, lat: float, lng: float) -> bool:
         """发送位置消息"""
-        if lat == 0.0 and lng == 0.0:
+        if (not math.isfinite(lat) or not math.isfinite(lng) or
+                not -90.0 <= lat <= 90.0 or not -180.0 <= lng <= 180.0 or
+                (lat == 0.0 and lng == 0.0)):
             return False
         loc_msg = PacketParser.format_location_message(lat, lng)
         return self.send_text_message(loc_msg)
@@ -236,7 +254,7 @@ class TalkService:
             self.settings.audio.codec = codec_type
             self.settings.audio.sample_rate = 16000 if codec_type == 'opus' else 8000
             self._tx_codec = self._create_codec(codec_type)
-            self.settings.save_codec()
+        self.settings.save_codec()
         logger.info(f"发射编码已切换: {codec_type}")
         return True
 
@@ -256,7 +274,7 @@ class TalkService:
             self.settings.audio.opus_bitrate = bitrate
             if isinstance(self._tx_codec, OpusCodec):
                 self._tx_codec = self._create_codec('opus')
-            self.settings.save_opus_bitrate()
+        self.settings.save_opus_bitrate()
         logger.info(f"Opus 码率已切换: {bitrate} bps")
         return True
 
@@ -322,8 +340,6 @@ class TalkService:
     def _deliver_voice(self, pcm_data: bytes, packet: NRLPacket, extra: Optional[Dict] = None):
         """分发解码后的语音数据"""
         with self._ptt_lock:
-            self._last_voice_time = time.time()
-            self._is_receiving = True
             transmitting = self.is_transmitting
         with self._stats_lock:
             self.voice_packets_received += 1
@@ -339,6 +355,10 @@ class TalkService:
         pkt_ssid = packet.header.ssid
         if pkt_call == local_call and pkt_ssid == local_ssid:
             return
+
+        with self._ptt_lock:
+            self._last_voice_time = time.monotonic()
+            self._is_receiving = True
 
         dmr_id = packet.header.dmr_id.hex().upper() if packet.header.dmr_id else ""
         info = {
@@ -400,19 +420,19 @@ class TalkService:
 
     def _playback_timeout_loop(self):
         """语音播放超时检查"""
-        while self.udp_client.is_running:
+        while not self._stop_event.is_set() and self.udp_client.is_running:
             try:
                 with self._ptt_lock:
                     last_time = self._last_voice_time
                     receiving = self._is_receiving
                 if last_time > 0:
-                    elapsed = time.time() - last_time
+                    elapsed = time.monotonic() - last_time
                     if elapsed > self._voice_timeout and receiving:
                         with self._ptt_lock:
                             self._is_receiving = False
                         if self.on_status_update:
                             self.on_status_update('voice_timeout', None)
-                time.sleep(0.5)
+                self._stop_event.wait(0.5)
             except Exception as e:
                 logger.error(f"播放超时检查错误: {e}")
 
@@ -430,6 +450,7 @@ class TalkService:
             received = self.voice_packets_received
         with self._ptt_lock:
             transmitting = self.is_transmitting
+        udp_stats = self.udp_client.get_stats()
         return {
             'connected': self.is_connected,
             'transmitting': transmitting,
@@ -438,6 +459,6 @@ class TalkService:
             'callsign': f"{self.settings.device.callsign}-{self.settings.device.ssid}",
             'voice_sent': sent,
             'voice_received': received,
-            'packets_sent': self.udp_client.packets_sent,
-            'packets_received': self.udp_client.packets_received,
+            'packets_sent': udp_stats['packets_sent'],
+            'packets_received': udp_stats['packets_received'],
         }

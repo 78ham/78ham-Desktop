@@ -5,8 +5,6 @@
 底部固定的信息条。
 """
 import customtkinter as ctk
-from typing import Optional
-
 from ui.theme import Colors, Fonts, Spacing
 
 

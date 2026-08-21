@@ -8,7 +8,6 @@ import logging
 import threading
 from typing import Optional, Callable, List, Dict
 
-from core.protocol import PacketType
 from core.packet_factory import PacketFactory
 from core.packet_parser import PacketParser
 from config.settings import Settings
@@ -42,6 +41,8 @@ class RoomService:
         self._join_pending = False
         self._list_timeout = 3.0
         self._join_timeout = 3.0
+        self._list_requested_at = 0.0
+        self._join_requested_at = 0.0
 
         # 回调
         self.on_group_list: Optional[Callable[[List[Dict]], None]] = None
@@ -49,44 +50,78 @@ class RoomService:
 
     def request_group_list(self) -> bool:
         """请求服务器房间列表"""
-        with self._lock:
-            if self._list_pending:
-                return False  # 已有请求待处理，去重
-        if not self.udp_client.is_running:
+        if not self.udp_client.connection_mgr.is_connected:
             logger.warning("未连接，无法请求房间列表")
             return False
 
-        packet = self._packet_factory.create_group_list_request(
-            self.settings.device.callsign,
-            self.settings.device.ssid,
-            self.settings.device.dmr_id,
-            self.settings.device.model,
-        )
-        if self.udp_client.send_packet(packet):
+        now = time.monotonic()
+        with self._lock:
+            if self._list_pending:
+                if now - self._list_requested_at < self._list_timeout:
+                    return False
+                logger.warning("房间列表请求超时，重新发送")
+            # 先占位，防止多个调用者同时发送重复请求。
+            self._list_pending = True
+            self._list_requested_at = now
+
+        try:
+            packet = self._packet_factory.create_group_list_request(
+                self.settings.device.callsign,
+                self.settings.device.ssid,
+                self.settings.device.dmr_id,
+                self.settings.device.model,
+                password=self.settings.device.password,
+            )
+        except ValueError as e:
             with self._lock:
-                self._list_pending = True
+                self._list_pending = False
+                self._list_requested_at = 0.0
+            logger.warning(str(e))
+            return False
+        if self.udp_client.send_packet(packet):
             logger.info("已发送房间列表请求")
             return True
+        with self._lock:
+            self._list_pending = False
+            self._list_requested_at = 0.0
         return False
 
     def join_group(self, group_id: int) -> bool:
         """加入/切换到指定房间"""
-        if not self.udp_client.is_running:
+        if not self.udp_client.connection_mgr.is_connected:
             logger.warning("未连接，无法切换房间")
             return False
 
-        packet = self._packet_factory.create_join_group(
-            self.settings.device.callsign,
-            self.settings.device.ssid,
-            self.settings.device.dmr_id,
-            group_id,
-            self.settings.device.model,
-        )
-        if self.udp_client.send_packet(packet):
+        now = time.monotonic()
+        with self._lock:
+            if self._join_pending:
+                if now - self._join_requested_at < self._join_timeout:
+                    return False
+                logger.warning("房间切换请求超时，重新发送")
+            self._join_pending = True
+            self._join_requested_at = now
+
+        try:
+            packet = self._packet_factory.create_join_group(
+                self.settings.device.callsign,
+                self.settings.device.ssid,
+                self.settings.device.dmr_id,
+                group_id,
+                self.settings.device.model,
+                password=self.settings.device.password,
+            )
+        except ValueError as e:
             with self._lock:
-                self._join_pending = True
+                self._join_pending = False
+                self._join_requested_at = 0.0
+            logger.warning(str(e))
+            return False
+        if self.udp_client.send_packet(packet):
             logger.info(f"已发送加入房间请求: {group_id}")
             return True
+        with self._lock:
+            self._join_pending = False
+            self._join_requested_at = 0.0
         return False
 
     def handle_group_response(self, data: bytes):
@@ -103,13 +138,15 @@ class RoomService:
             if subtype == 2 and self._list_pending:
                 # 房间列表响应
                 self._list_pending = False
+                self._list_requested_at = 0.0
                 self.group_list = PacketParser.parse_group_list_response(data)
                 logger.info(f"收到房间列表: 共 {len(self.group_list)} 个房间")
                 callback = self.on_group_list
-                group_list = self.group_list
+                group_list = list(self.group_list)
             elif subtype == 1 and self._join_pending:
                 # 加入房间响应
                 self._join_pending = False
+                self._join_requested_at = 0.0
                 group_id, group_name = PacketParser.parse_join_group_response(data)
                 if group_name == "error":
                     logger.warning(f"加入房间 {group_id} 失败")

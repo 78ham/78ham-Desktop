@@ -6,7 +6,7 @@
 import customtkinter as ctk
 from typing import Optional, Callable, List, Dict
 
-from ui.theme import Colors, Fonts, Spacing
+from ui.theme import Fonts, Spacing
 
 
 class RoomSelector(ctk.CTkFrame):

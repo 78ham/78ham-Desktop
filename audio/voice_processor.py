@@ -53,16 +53,16 @@ class VoiceProcessor:
     def _encode_g711(self, pcm_data: bytes) -> bytes:
         try:
             if not pcm_data:
-                return b'\x80' * 160
+                return b'\xD5' * 160
             encoded = self.g711_codec.encode(pcm_data)
             if not encoded:
-                return b'\x80' * 160
+                return b'\xD5' * 160
             self.encode_count += 1
             return encoded
         except Exception as e:
             logger.error(f"G.711编码异常: {e}")
             self.error_count += 1
-            return b'\x80' * 160
+            return b'\xD5' * 160
 
     def _encode_opus(self, pcm_data: bytes) -> bytes:
         try:

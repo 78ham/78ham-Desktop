@@ -6,9 +6,7 @@ Windows: 使用 keyboard 库（需要管理员权限）
 Linux: 使用 pynput 库（X11，不需要 root 权限）
 """
 import sys
-import os
 import logging
-import threading
 from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)

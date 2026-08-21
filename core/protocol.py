@@ -5,7 +5,6 @@ NRL2 协议数据结构定义
 协议头部 48 字节固定格式，数据部分变长。
 """
 import sys
-import struct
 import time
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -187,9 +186,13 @@ def is_valid_callsign(callsign: Union[str, bytes, None]) -> bool:
     # 统一转为 bytes 处理
     if isinstance(callsign, str):
         try:
-            callsign = callsign.encode('ascii')
+            callsign = callsign.strip().encode('ascii')
         except UnicodeEncodeError:
             return False
+    else:
+        # Wire callsigns occupy six bytes and are commonly NUL padded.
+        callsign = callsign.rstrip(b'\x00').strip()
     
-    # 使用预计算的字符集进行快速验证
-    return all(b in _VALID_CALLSIGN_BYTES for b in callsign)
+    return 1 <= len(callsign) <= 6 and all(
+        b in _VALID_CALLSIGN_BYTES for b in callsign
+    )

@@ -66,8 +66,11 @@ class ConnectionManager:
     def mark_packet_received(self):
         """标记收到数据包（用于超时检测）"""
         with self._lock:
-            self._last_packet_time = time.time()
+            self._last_packet_time = time.monotonic()
             self._reconnect_count = 0
+            restore_connected = self._state != ConnectionState.CONNECTED
+        if restore_connected:
+            self.state = ConnectionState.CONNECTED
 
     def should_reconnect(self) -> bool:
         """是否应该尝试重连"""

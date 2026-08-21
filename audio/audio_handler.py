@@ -6,17 +6,19 @@ import threading
 import numpy as np  # type: ignore
 import logging
 import time
-import pyaudio  # type: ignore
-from typing import Optional, Callable, Dict, Tuple, List
+try:
+    import pyaudiowpatch as pyaudio  # type: ignore
+except ImportError:
+    import pyaudio  # type: ignore
+from typing import Optional, Callable, Dict, List
 from collections import deque
-from core.codec import G711Codec, OpusCodec
-from core.protocol import PacketType
 
 logger = logging.getLogger(__name__)
 
 
 class AudioHandler:
     """音频处理类"""
+    MAX_PLAY_BUFFER_FRAMES = 250  # 约 5 秒，避免输出设备阻塞时无界增长
     
     # 音频格式映射（类级别常量，避免重复创建）
     FORMAT_MAP = {
@@ -52,6 +54,7 @@ class AudioHandler:
         
         # 音频回调函数
         self.audio_callback: Optional[Callable[[bytes], None]] = None
+        self._recording_callbacks: list = []  # 多个录音回调
         
         # 录音状态
         self.is_recording = False
@@ -108,6 +111,26 @@ class AudioHandler:
             self.sample_rate = sample_rate
         self.pcm_frame_size = self._calc_pcm_frame_size(codec_type, self.sample_rate)
         logger.info(f"音频编码格式已切换为: {codec_type}, PCM帧大小: {self.pcm_frame_size}字节, 采样率: {self.sample_rate}Hz")
+    
+    def add_recording_callback(self, callback: Callable[[bytes], None]):
+        """添加录音回调函数
+        
+        Args:
+            callback: 音频数据回调函数
+        """
+        if callback not in self._recording_callbacks:
+            self._recording_callbacks.append(callback)
+            logger.debug(f"添加录音回调，当前共 {len(self._recording_callbacks)} 个回调")
+    
+    def remove_recording_callback(self, callback: Callable[[bytes], None]):
+        """移除录音回调函数
+        
+        Args:
+            callback: 要移除的回调函数
+        """
+        if callback in self._recording_callbacks:
+            self._recording_callbacks.remove(callback)
+            logger.debug(f"移除录音回调，当前共 {len(self._recording_callbacks)} 个回调")
 
     def _ensure_pyaudio(self):
         """延迟初始化PyAudio，线程安全，避免多线程同时初始化PortAudio"""
@@ -349,6 +372,8 @@ class AudioHandler:
                 return
             
             try:
+                with self.jitter_buffer_lock:
+                    self.jitter_buffer.clear()
                 self.is_playing = True
                 self.playback_stop_flag = False
                 self.play_buffer = deque()
@@ -384,9 +409,6 @@ class AudioHandler:
     
     def stop_playback(self):
         """停止播放"""
-        # 先刷入抖动缓冲区中的滞留数据
-        self.flush_jitter_buffer()
-        
         stream_to_stop = None
         with self.lock:
             if not self.is_playing:
@@ -405,6 +427,9 @@ class AudioHandler:
             except Exception as e:
                 logger.error(f"停止播放失败: {e}")
                 raise
+
+        with self.jitter_buffer_lock:
+            self.jitter_buffer.clear()
         
         # 在锁外停止流，避免与_play_callback死锁（带超时保护）
         if stream_to_stop:
@@ -425,11 +450,13 @@ class AudioHandler:
 
         # 处理语音数据缓存 - 按PCM帧大小管理
         pending_callbacks = []
+        recording_data = in_data
         with self.voice_cache_lock:
             # 软件重采样（设备采样率 ≠ 目标采样率时）
             if self._recording_need_resample:
                 in_data = self._resample_pcm(
                     in_data, self._recording_native_rate, self.sample_rate)
+                recording_data = in_data
 
             self.voice_data_cache.extend(in_data)
 
@@ -448,7 +475,17 @@ class AudioHandler:
 
         # 在锁外调用回调，减少锁持有时间
         for send_data in pending_callbacks:
-            self.audio_callback(send_data)
+            try:
+                self.audio_callback(send_data)
+            except Exception:
+                logger.exception("录音数据回调异常")
+        
+        # 调用所有注册的录音回调（用于本地录音等）
+        for callback in self._recording_callbacks[:]:  # 使用切片复制避免迭代时修改
+            try:
+                callback(recording_data)
+            except Exception:
+                logger.exception("录音回调异常")
 
         return (None, pyaudio.paContinue)
 
@@ -517,14 +554,18 @@ class AudioHandler:
     
     def add_playback_data(self, data: bytes):
         """添加播放数据到缓冲区 - 支持网络抖动缓冲"""
-        if not self.is_playing or not data:
+        if not data:
             return
-        
+        with self.lock:
+            if not self.is_playing or self.playback_stop_flag:
+                return
+
         with self.jitter_buffer_lock:
             timestamped_data = (time.time(), data)
             self.jitter_buffer.append(timestamped_data)
-        
-        if len(self.jitter_buffer) >= self.jitter_buffer_size:
+            ready = len(self.jitter_buffer) >= self.jitter_buffer_size
+
+        if ready:
             self._process_jitter_buffer()
     
     def _process_jitter_buffer(self):
@@ -532,14 +573,19 @@ class AudioHandler:
         with self.jitter_buffer_lock:
             if not self.jitter_buffer:
                 return
-            
-            sorted_packets = sorted(self.jitter_buffer, key=lambda x: x[0])
-            
-            with self.lock:
-                for timestamp, data in sorted_packets:
-                    self.play_buffer.append(data)
-            
+            packets = list(self.jitter_buffer)
             self.jitter_buffer.clear()
+        self._enqueue_playback_packets(packets)
+
+    def _enqueue_playback_packets(self, packets):
+        """Append an ordered batch while keeping latency and memory bounded."""
+        with self.lock:
+            if not self.is_playing or self.playback_stop_flag:
+                return
+            for _, data in packets:
+                while len(self.play_buffer) >= self.MAX_PLAY_BUFFER_FRAMES:
+                    self.play_buffer.popleft()
+                self.play_buffer.append(data)
     
     @staticmethod
     def _safe_stop_stream(stream, name: str = "流", timeout: float = 2.0):
@@ -567,18 +613,20 @@ class AudioHandler:
         with self.jitter_buffer_lock:
             if not self.jitter_buffer:
                 return
-            sorted_packets = sorted(self.jitter_buffer, key=lambda x: x[0])
-            with self.lock:
-                for timestamp, data in sorted_packets:
-                    self.play_buffer.append(data)
+            packets = list(self.jitter_buffer)
             self.jitter_buffer.clear()
+        self._enqueue_playback_packets(packets)
     
     def add_playback_data_immediate(self, data: bytes):
         """立即添加播放数据（绕过抖动缓冲）"""
-        if not self.is_playing or not data:
+        if not data:
             return
-        
+
         with self.lock:
+            if not self.is_playing or self.playback_stop_flag:
+                return
+            while len(self.play_buffer) >= self.MAX_PLAY_BUFFER_FRAMES:
+                self.play_buffer.popleft()
             self.play_buffer.append(data)
     
     def get_recorded_audio(self) -> bytes:
@@ -639,10 +687,12 @@ class AudioHandler:
         
         # 测试录音
         print("测试录音5秒...")
+        recorded_frames = []
         try:
-            self.start_recording()
+            self.start_recording(recorded_frames.append)
             time.sleep(5)
-            recorded_data = self.stop_recording()
+            self.stop_recording()
+            recorded_data = b''.join(recorded_frames)
             print(f"录音测试完成，录制了 {len(recorded_data)} 字节数据")
         except Exception as e:
             print(f"录音测试失败: {e}")

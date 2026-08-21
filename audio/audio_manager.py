@@ -5,6 +5,7 @@
 后续可逐步将 audio_handler.py 拆分为 recorder.py / player.py / jitter_buffer.py。
 """
 import logging
+import threading
 from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
@@ -18,12 +19,17 @@ class AudioManager:
     """
 
     def __init__(self, sample_rate: int = 8000, channels: int = 1,
-                 chunk_size: int = 320, format_str: str = "paInt16",
+                 chunk_size: Optional[int] = None, format_str: str = "paInt16",
                  codec_type: str = "g711"):
         # 延迟导入，保持向后兼容
         from audio.audio_handler import AudioHandler
         from audio.voice_processor import VoiceProcessor
 
+        if chunk_size is None:
+            chunk_size = 640 if codec_type == 'opus' else 320
+        self._channels = channels
+        self._format_str = format_str
+        self._lock = threading.RLock()
         self._handler = AudioHandler(
             sample_rate=sample_rate,
             channels=channels,
@@ -48,11 +54,28 @@ class AudioManager:
 
     def stop_recording(self):
         """停止录音"""
-        self._handler.stop_recording()
+        if self._handler.is_recording_active():
+            self._handler.stop_recording()
 
     def is_recording(self) -> bool:
         """是否正在录音"""
         return self._handler.is_recording_active()
+    
+    def add_recording_callback(self, callback):
+        """添加录音回调函数
+        
+        Args:
+            callback: 音频数据回调函数
+        """
+        self._handler.add_recording_callback(callback)
+    
+    def remove_recording_callback(self, callback):
+        """移除录音回调函数
+        
+        Args:
+            callback: 要移除的回调函数
+        """
+        self._handler.remove_recording_callback(callback)
 
     # ==================== 播放 ====================
 
@@ -62,7 +85,8 @@ class AudioManager:
 
     def stop_playback(self):
         """停止播放"""
-        self._handler.stop_playback()
+        if self._handler.is_playback_active():
+            self._handler.stop_playback()
 
     def is_playing(self) -> bool:
         """是否正在播放"""
@@ -92,31 +116,51 @@ class AudioManager:
 
     # ==================== 编码切换 ====================
 
-    def set_codec(self, codec_type: str, sample_rate: int):
+    def set_codec(self, codec_type: str, sample_rate: int) -> bool:
         """切换编码格式（需要重建音频流）"""
         from audio.audio_handler import AudioHandler
-        from audio.voice_processor import VoiceProcessor
+
+        if codec_type not in {'g711', 'opus'}:
+            raise ValueError(f"不支持的音频编码: {codec_type}")
 
         chunk_size = 640 if codec_type == 'opus' else 320
+        with self._lock:
+            old_handler = self._handler
+            was_playing = old_handler.is_playback_active()
+            input_device = old_handler.input_device_index
+            output_device = old_handler.output_device_index
 
-        self._handler.stop_recording()
-        self._handler.stop_playback()
-        self._handler.close()
-        self._handler = AudioHandler(
-            sample_rate=sample_rate,
-            channels=1,
-            chunk_size=chunk_size,
-            format_str="paInt16",
-            codec_type=codec_type,
-        )
-        self._voice_processor.set_codec(codec_type)
-        self._codec_type = codec_type
+            if old_handler.is_recording_active():
+                old_handler.stop_recording()
+            if was_playing:
+                old_handler.stop_playback()
+            old_handler.close()
+
+            new_handler = AudioHandler(
+                sample_rate=sample_rate,
+                channels=self._channels,
+                chunk_size=chunk_size,
+                format_str=self._format_str,
+                codec_type=codec_type,
+            )
+            new_handler.input_device_index = input_device
+            new_handler.output_device_index = output_device
+            self._handler = new_handler
+            self._voice_processor.set_codec(codec_type)
+            self._codec_type = codec_type
+            if was_playing:
+                new_handler.start_playback()
+        return True
 
     # ==================== 设备管理 ====================
 
     def list_devices(self):
         """列出音频设备"""
         return self._handler.list_audio_devices()
+
+    def test_devices(self):
+        """录制并回放一段测试音频。"""
+        return self._handler.test_audio_devices()
 
     def get_input_devices(self) -> list:
         """获取可用的输入设备列表"""
@@ -159,6 +203,7 @@ class AudioManager:
     def close(self):
         """关闭音频管理器"""
         try:
-            self._handler.close()
+            with self._lock:
+                self._handler.close()
         except Exception as e:
             logger.error(f"关闭音频管理器异常: {e}")

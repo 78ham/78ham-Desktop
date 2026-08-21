@@ -41,13 +41,13 @@ class PacketParser:
             # 解析长度
             length = struct.unpack(">H", data[4:6])[0]
 
-            # 长度合理性校验：不超过 UDP 包最大值 65535
-            if length > 65535:
+            # uint16 本身不会超过 65535；下限必须至少容纳固定头部。
+            if length < HEADER_SIZE:
                 logger.debug(f"数据包长度字段异常: {length}")
                 return None
 
             # 检查数据完整性
-            if len(data) < length or length > 65535:
+            if len(data) < length:
                 logger.debug(f"数据包不完整: 期望 {length} 字节，实际 {len(data)} 字节")
                 return None
 

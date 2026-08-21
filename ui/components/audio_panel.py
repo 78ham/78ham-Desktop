@@ -20,9 +20,18 @@ TAIL_TYPE_REVERSE = {v: k for k, v in TAIL_TYPE_MAP.items()}
 TAIL_TYPE_DISPLAY = list(TAIL_TYPE_MAP.keys())
 
 # Opus 码率选项：(bps值, 显示文本)
-BITRATE_OPTIONS = ["16000", "24000", "32000", "36000", "48000", "64000"]
-BITRATE_DISPLAY = ["16 kbps", "24 kbps", "32 kbps", "36 kbps", "48 kbps", "64 kbps"]
+BITRATE_OPTIONS = [
+    "6000", "8000", "12000", "16000", "20000", "24000",
+    "32000", "36000", "48000", "64000", "96000", "128000",
+    "256000", "510000"
+]
+BITRATE_DISPLAY = [
+    "6 kbps", "8 kbps", "12 kbps", "16 kbps", "20 kbps", "24 kbps",
+    "32 kbps", "36 kbps", "48 kbps", "64 kbps", "96 kbps", "128 kbps",
+    "256 kbps", "510 kbps"
+]
 BITRATE_DEFAULT = "36000"
+
 
 
 class AudioPanel(ctk.CTkFrame):

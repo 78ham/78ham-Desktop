@@ -5,7 +5,6 @@
 组合各 UI 组件构建完整界面。
 """
 import os
-import sys
 import time
 import logging
 import threading
@@ -17,6 +16,8 @@ from services.talk_service import TalkService
 from services.room_service import RoomService
 from services.location_service import LocationService
 from services.tail_tone_service import TailToneService
+from services.recording_service import RecordingService
+from services.platform_service import PlatformService
 from ptt.hotkey import PttController
 
 from audio.audio_manager import AudioManager
@@ -27,6 +28,7 @@ from ui.components.chat_panel import ChatPanel
 from ui.components.room_selector import RoomSelector
 from ui.components.audio_panel import AudioPanel
 from ui.components.config_dialog import ConfigDialog
+from ui.components.recording_panel import RecordingPanel
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,8 @@ class App(ctk.CTk):
         self._room: Optional[RoomService] = None
         self._location: Optional[LocationService] = None
         self._tail_tone: Optional[TailToneService] = None
+        self._recording: Optional[RecordingService] = None
+        self._platform: Optional[PlatformService] = None
         self._ptt_controller: Optional[PttController] = None
 
         # 状态
@@ -71,6 +75,7 @@ class App(ctk.CTk):
         self._voice_recv_info: dict = {}               # 当前语音发送者信息
         self._voice_send_start: float = 0.0            # 本机语音发送开始时间
         self._ptt_active = False                       # PTT 发射中标志（热键/鼠标互斥）
+        self._tail_tone_save_timer: Optional[str] = None
 
         # 构建 UI
         self._build_ui()
@@ -123,6 +128,15 @@ class App(ctk.CTk):
             on_refresh=self._on_refresh_rooms,
         )
         self._room_selector.pack(fill="x", pady=(0, Spacing.PAD_SM))
+        
+        # 录音面板
+        self._recording_panel = RecordingPanel(
+            left_panel,
+            on_start_recording=self._on_start_recording,
+            on_stop_recording=self._on_stop_recording,
+            on_open_recordings_dir=self._on_open_recordings_dir,
+        )
+        self._recording_panel.pack(fill="x", pady=(0, Spacing.PAD_SM))
 
         # 右侧：聊天面板
         self._chat_panel = ChatPanel(
@@ -172,6 +186,14 @@ class App(ctk.CTk):
         )
         self._config_btn.pack(side="right", padx=Spacing.PAD_XS)
 
+        # 刷新服务器按钮
+        self._refresh_servers_btn = ctk.CTkButton(
+            toolbar, text="刷新服务器", width=80,
+            fg_color="gray",
+            command=self._on_refresh_platform_servers,
+        )
+        self._refresh_servers_btn.pack(side="right", padx=Spacing.PAD_XS)
+
     # ==================== 服务初始化 ====================
 
     def _init_services(self):
@@ -185,6 +207,21 @@ class App(ctk.CTk):
             sample_rate=self._settings.audio.sample_rate,
             codec_type=self._settings.audio.codec,
         )
+        
+        # 录音服务
+        self._recording = RecordingService(
+            self._audio._handler,  # 获取底层的 AudioHandler
+            self._settings,
+        )
+        self._recording.on_recording_started = self._on_recording_started
+        self._recording.on_recording_stopped = self._on_recording_stopped
+        self._recording.on_recording_error = self._on_recording_error
+        
+        # 平台服务（拉取平台服务器列表）
+        self._platform = PlatformService(self._settings)
+        
+        # 自动拉取平台服务器列表（异步，避免阻塞启动）
+        threading.Thread(target=self._auto_fetch_platform_servers, daemon=True).start()
 
         # 初始化码率控件
         self._audio_panel.set_codec(self._settings.audio.codec)
@@ -265,7 +302,7 @@ class App(ctk.CTk):
         self._connecting = True
 
         # 检查设备密码，为空则提示输入
-        if not self._settings.device.password:
+        if not self._settings.get_current_password():
             server = self._settings.get_current_server()
             server_name = server.name if server else "服务器"
             pwd = self._prompt_password(server_name)
@@ -273,7 +310,10 @@ class App(ctk.CTk):
                 self._chat_panel.add_system_message("已取消连接")
                 self._connecting = False
                 return
-            self._settings.device.password = pwd
+            self._settings.set_current_password(pwd)
+            self._settings.save_updates({
+                'device': {'password': self._settings.device.password},
+            })
 
         self._status_bar.set_connection_state("connecting")
         self._connect_btn.configure(text="连接中...", state="disabled")
@@ -282,6 +322,13 @@ class App(ctk.CTk):
         # 在后台线程执行连接
         def _do_connect():
             try:
+                server = self._settings.get_current_server()
+                if (server and server.username and server.api_password and self._platform
+                        and not self._platform.login_current_server(
+                            server.username, server.api_password)):
+                    self.after(0, lambda: self._on_connect_result(
+                        False, "服务器账号登录失败"))
+                    return
                 success = self._talk.start()
             except Exception:
                 logger.exception("连接线程异常")
@@ -290,7 +337,7 @@ class App(ctk.CTk):
 
         threading.Thread(target=_do_connect, daemon=True).start()
 
-    def _on_connect_result(self, success: bool):
+    def _on_connect_result(self, success: bool, error: str = ""):
         """连接结果回调（主线程）"""
         self._connecting = False
         if success:
@@ -299,7 +346,8 @@ class App(ctk.CTk):
             self._connect_btn.configure(text="断开", state="normal",
                                         fg_color=Colors.DISCONNECTED)
             self._chat_panel.add_system_message("连接成功")
-            self._audio.start_playback()
+            if self._audio_panel.playback_enabled:
+                self._audio.start_playback()
             self._location.start_auto_report()
             self._ptt_button.set_enabled(True)
             self._chat_panel.set_enabled(True)
@@ -310,7 +358,7 @@ class App(ctk.CTk):
             self._connected = False
             self._status_bar.set_connection_state("disconnected")
             self._connect_btn.configure(text="连接", state="normal")
-            self._chat_panel.add_system_message("连接失败")
+            self._chat_panel.add_system_message(error or "连接失败")
 
     def _disconnect(self):
         """断开连接"""
@@ -341,6 +389,12 @@ class App(ctk.CTk):
         """PTT 按下实际处理（主线程）"""
         if not self._connected or self._ptt_active:
             return
+        
+        # 如果正在录音，提示用户
+        if self._recording and self._recording.is_recording:
+            self._chat_panel.add_system_message("正在录音中，无法发射")
+            return
+        
         if self._talk.start_transmitting():
             self._ptt_active = True
             self._ptt_button.set_transmitting()
@@ -475,14 +529,33 @@ class App(ctk.CTk):
             self._audio_panel.set_codec(self._settings.audio.codec)
             return
 
-        if self._talk.set_codec(codec):
-            self._status_bar.set_codec(codec)
-            self._chat_panel.add_system_message(f"编码已切换: {codec}")
-            if self._tail_tone:
-                self._tail_tone.on_codec_changed()
-        else:
+        old_codec = self._settings.audio.codec
+        if not self._talk.set_codec(codec):
             self._chat_panel.add_system_message("编码切换失败")
             self._audio_panel.set_codec(self._settings.audio.codec)
+            return
+
+        if self._recording and self._recording.is_recording:
+            self._chat_panel.add_system_message("录音中无法切换编码")
+            self._audio_panel.set_codec(self._settings.audio.codec)
+            return
+
+        try:
+            sample_rate = 16000 if codec == 'opus' else 8000
+            self._audio.set_codec(codec, sample_rate)
+            if self._recording:
+                self._recording.bind_audio_handler(self._audio._handler)
+        except Exception:
+            logger.exception("重建音频流失败")
+            self._talk.set_codec(old_codec)
+            self._audio_panel.set_codec(old_codec)
+            self._chat_panel.add_system_message("编码切换失败: 无法重建音频设备")
+            return
+
+        self._status_bar.set_codec(codec)
+        self._chat_panel.add_system_message(f"编码已切换: {codec}")
+        if self._tail_tone:
+            self._tail_tone.on_codec_changed()
 
     def _on_bitrate_change(self, bitrate: int):
         """切换 Opus 码率"""
@@ -494,8 +567,10 @@ class App(ctk.CTk):
 
     def _on_playback_toggle(self, enabled: bool):
         """播放开关"""
-        # TalkService 内部处理播放状态
-        pass
+        if enabled and self._connected:
+            self._audio.start_playback()
+        else:
+            self._audio.stop_playback()
 
     def _on_tail_tone_change(self, config: dict):
         """尾音配置变化"""
@@ -512,6 +587,72 @@ class App(ctk.CTk):
         self._settings.tail_tone.custom_file = config.get("file", "")
         self._settings.tail_tone.mdc_id = config.get("mdc_id", 0)
         self._settings.tail_tone.amplitude = config.get("amplitude", 0.2)
+        if self._tail_tone_save_timer:
+            self.after_cancel(self._tail_tone_save_timer)
+        self._tail_tone_save_timer = self.after(300, self._persist_tail_tone)
+    
+    # ==================== 录音功能 ====================
+    
+    def _on_start_recording(self):
+        """开始录音"""
+        if not self._recording:
+            self._chat_panel.add_system_message("录音服务未初始化")
+            return
+        
+        # 如果正在发射，提示用户
+        if self._ptt_active:
+            self._chat_panel.add_system_message("正在发射中，无法开始录音")
+            return
+        
+        if self._recording.start_recording():
+            self._recording_panel.set_recording_state(True)
+            self._chat_panel.add_system_message("开始录音")
+        else:
+            self._chat_panel.add_system_message("开始录音失败")
+    
+    def _on_stop_recording(self):
+        """停止录音"""
+        if not self._recording:
+            return
+        
+        recording_file = self._recording.stop_recording()
+        if recording_file:
+            self._recording_panel.set_recording_state(False)
+            self._recording_panel.add_recording_file(recording_file)
+            self._chat_panel.add_system_message(f"录音已保存: {os.path.basename(recording_file)}")
+        else:
+            self._recording_panel.set_recording_state(False)
+            self._chat_panel.add_system_message("停止录音失败")
+    
+    def _on_recording_started(self):
+        """录音开始回调"""
+        pass  # 已在 _on_start_recording 中处理
+    
+    def _on_recording_stopped(self, file_path: str):
+        """录音停止回调"""
+        pass  # 已在 _on_stop_recording 中处理
+    
+    def _on_recording_error(self, error_msg: str):
+        """录音错误回调"""
+        self._chat_panel.add_system_message(f"录音错误: {error_msg}")
+        self._recording_panel.set_recording_state(False)
+    
+    def _on_open_recordings_dir(self):
+        """打开录音目录"""
+        if self._recording:
+            recordings_dir = self._recording.get_recordings_dir()
+            try:
+                os.startfile(recordings_dir)
+            except AttributeError:
+                # Linux/Mac
+                import subprocess
+                subprocess.Popen(['xdg-open', recordings_dir])
+            except Exception as e:
+                self._chat_panel.add_system_message(f"打开录音目录失败: {e}")
+
+    def _persist_tail_tone(self):
+        """合并短时间内连续产生的滑块配置写入。"""
+        self._tail_tone_save_timer = None
         self._settings.save_tail_tone()
 
     def _send_tail_tone(self):
@@ -535,16 +676,37 @@ class App(ctk.CTk):
 
     def _open_config(self):
         """打开配置对话框"""
-        ConfigDialog(self, on_save=self._on_config_saved)
+        ConfigDialog(
+            self,
+            initial_data=self._settings.to_dict(),
+            on_save=self._on_config_saved,
+        )
 
     def _on_config_saved(self, filename: str, config_data: dict):
         """配置保存回调"""
-        if filename:
-            self._chat_panel.add_system_message(f"配置已保存: {filename}")
-        else:
-            self._chat_panel.add_system_message("配置已更新")
-        # 配置可能变更了服务器列表，刷新下拉菜单
+        if self._connected:
+            self._disconnect()
+        if not self._settings.save_updates(config_data):
+            self._chat_panel.add_system_message("配置保存失败")
+            return
+
+        refreshed = Settings.load(self._config_file)
+        self._settings.device = refreshed.device
+        self._settings.server = refreshed.server
+        self._settings.audio = refreshed.audio
+        self._settings.network = refreshed.network
+        self._settings.location = refreshed.location
+        self._settings.tail_tone = refreshed.tail_tone
+        self._settings.servers_list = refreshed.servers_list
+        self._settings.current_server_index = refreshed.current_server_index
+
+        self._status_bar.set_callsign(
+            self._settings.device.callsign, self._settings.device.ssid)
+        self._chat_panel.add_system_message("配置已更新")
         self._update_server_combo()
+        server = self._settings.get_current_server()
+        if server:
+            self._status_bar.set_server(server.name)
 
     # ==================== 服务器切换 ====================
 
@@ -658,7 +820,8 @@ class App(ctk.CTk):
         """TalkService 语音数据回调（可能从非主线程调用）"""
         from_call = info.get('from', '')
         # 播放语音
-        self._audio.add_playback_data(pcm_data)
+        if self._audio_panel.playback_enabled:
+            self._audio.add_playback_data(pcm_data)
 
         def _update_recv_state():
             now = time.time()
@@ -697,21 +860,28 @@ class App(ctk.CTk):
 
     def _on_service_connection_changed(self, state: str):
         """连接状态变化回调"""
+        state = state.value if hasattr(state, 'value') else state
         def _update():
             self._status_bar.set_connection_state(state)
             if state == "disconnected" and self._connected:
                 self._connected = False
+                self._ptt_button.force_release()
+                self._audio.stop_playback()
+                self._location.stop_auto_report()
                 self._connect_btn.configure(text="连接", state="normal")
                 self._chat_panel.add_system_message("连接已断开")
                 self._update_ui_state()
             elif state == "reconnecting":
                 self._chat_panel.add_system_message("正在重连...")
-            elif state == "connected" and not self._connected:
+            elif state == "connected" and not self._connected and not self._connecting:
                 self._connected = True
                 self._connect_btn.configure(text="断开", state="normal",
                                             fg_color=Colors.DISCONNECTED)
                 self._chat_panel.add_system_message("重连成功")
                 self._update_ui_state()
+                if self._audio_panel.playback_enabled:
+                    self._audio.start_playback()
+                self._location.start_auto_report()
                 # 连接成功后自动获取房间列表
                 self._room.request_group_list()
 
@@ -748,10 +918,15 @@ class App(ctk.CTk):
         self._ptt_button.set_enabled(connected)
         self._chat_panel.set_enabled(connected)
         self._room_selector.set_enabled(connected)
+        # 录音面板始终可用（不需要连接）
+        self._recording_panel.set_enabled(True)
 
     def _on_close(self):
         """窗口关闭"""
         try:
+            if self._tail_tone_save_timer:
+                self.after_cancel(self._tail_tone_save_timer)
+                self._persist_tail_tone()
             if self._ptt_controller:
                 self._ptt_controller.unregister()
             if self._location:
@@ -760,10 +935,67 @@ class App(ctk.CTk):
                 self._talk.stop()
             if self._audio:
                 self._audio.close()
+            if self._platform:
+                self._platform.close()
         except Exception as e:
-            logger.error(f"关闭时异常: {e}")
+            logger.error(f"关闭时异常：{e}")
         finally:
             self.destroy()
+
+    # ==================== 平台服务器管理 ====================
+
+    def _auto_fetch_platform_servers(self):
+        """自动拉取平台服务器列表（后台线程）"""
+        try:
+            servers = self._platform.fetch_platform_servers()
+            if servers:
+                self.after(0, lambda s=servers: self._merge_platform_servers(s))
+            else:
+                logger.debug("未获取到平台服务器列表")
+        except Exception as e:
+            logger.exception("拉取平台服务器失败")
+            self.after(0, lambda: self._chat_panel.add_system_message(f"拉取服务器失败：{e}"))
+
+    def _merge_platform_servers(self, platforms: list):
+        """合并平台服务器到现有列表"""
+        added = self._platform.merge_platform_servers(platforms)
+        
+        if added >0:
+            self.after(0, lambda a=added: self._update_server_combo_and_msg(a))
+
+    def _update_server_combo_and_msg(self, count: int):
+        """更新服务器下拉框并显示消息"""
+        server_names = [s.name for s in self._settings.servers_list]
+        current = self._settings.get_current_server()
+        current_name = current.name if current else ""
+        
+        self._server_var.set(current_name)
+        self._server_combo.configure(values=server_names if server_names else ["无服务器"])
+        self._chat_panel.add_system_message(f"已导入 {count} 个平台服务器")
+
+    def _on_refresh_platform_servers(self):
+        """手动刷新平台服务器列表"""
+        self._refresh_servers_btn.configure(state="disabled", text="拉取中...")
+        self._chat_panel.add_system_message("正在拉取平台服务器列表...")
+
+        def fetch():
+            try:
+                servers = self._platform.fetch_platform_servers()
+                self.after(0, lambda s=servers: self._on_platform_refresh_result(s))
+            except Exception as exc:
+                self.after(0, lambda e=exc: self._on_platform_refresh_result([], e))
+
+        threading.Thread(target=fetch, daemon=True, name="platform-refresh").start()
+
+    def _on_platform_refresh_result(self, servers: list, error: Optional[Exception] = None):
+        self._refresh_servers_btn.configure(state="normal", text="刷新服务器")
+        if error:
+            logger.exception("拉取平台服务器失败", exc_info=error)
+            self._chat_panel.add_system_message(f"拉取服务器失败：{error}")
+        elif servers:
+            self._merge_platform_servers(servers)
+        else:
+            self._chat_panel.add_system_message("未获取到平台服务器列表")
 
     def run(self):
         """启动主循环"""

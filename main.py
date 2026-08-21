@@ -7,10 +7,32 @@ import sys
 import os
 import argparse
 import logging
+from logging.handlers import RotatingFileHandler
 
 # 添加当前目录到 Python 路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
+
+
+def _ensure_venv():
+    """若当前解释器不是项目 .venv 且 .venv 存在，自动用 venv 解释器重启。
+
+    避免用户用系统 Python（如 3.14）双击/运行 main.py 时因缺少依赖
+    （customtkinter、numpy 等）而回退或崩溃。PyInstaller 打包后不生效。
+    """
+    if getattr(sys, 'frozen', False):
+        return
+    if sys.prefix == sys.base_prefix:
+        venv_py = os.path.join(
+            current_dir, '.venv',
+            'Scripts\\python.exe' if os.name == 'nt' else 'bin/python')
+        if os.path.isfile(venv_py):
+            print(f"[78HAM] 当前解释器 ({sys.executable}) 不是项目 .venv，"
+                  f"自动切换: {venv_py}")
+            os.execv(venv_py, [venv_py, os.path.abspath(__file__)] + sys.argv[1:])
+
+
+_ensure_venv()
 
 
 def setup_logging(level=logging.INFO):
@@ -21,7 +43,12 @@ def setup_logging(level=logging.INFO):
         base_dir = os.path.dirname(os.path.abspath(__file__))
     log_path = os.path.join(base_dir, '78ham.log')
 
-    handlers = [logging.FileHandler(log_path, encoding='utf-8')]
+    handlers = [RotatingFileHandler(
+        log_path,
+        maxBytes=2 * 1024 * 1024,
+        backupCount=3,
+        encoding='utf-8',
+    )]
 
     # PyInstaller windowed 模式下 stdout 不可用，仅在控制台可用时添加
     if sys.stdout and hasattr(sys.stdout, 'write'):
@@ -58,12 +85,15 @@ def main():
         if args.test_audio or args.list_audio:
             from audio.audio_manager import AudioManager
             mgr = AudioManager()
-            if args.list_audio:
-                print("音频设备列表:")
-                mgr.list_devices()
-            else:
-                print("开始音频设备测试...")
-            mgr.close()
+            try:
+                if args.list_audio:
+                    print("音频设备列表:")
+                    mgr.list_devices()
+                else:
+                    print("开始音频设备测试...")
+                    mgr.test_devices()
+            finally:
+                mgr.close()
             return
 
         # GUI 模式
@@ -113,6 +143,8 @@ def _run_cli(args):
     from services.talk_service import TalkService
     from services.room_service import RoomService
     from services.location_service import LocationService
+    from services.recording_service import RecordingService
+    from audio.audio_manager import AudioManager
 
     logger = logging.getLogger(__name__)
 
@@ -123,6 +155,13 @@ def _run_cli(args):
     talk = TalkService(settings)
     room = RoomService(settings, talk.udp_client)
     location = LocationService(settings)
+
+    # 音频管理器与录音服务
+    audio = AudioManager(
+        sample_rate=settings.audio.sample_rate,
+        codec_type=settings.audio.codec,
+    )
+    recording = RecordingService(audio._handler, settings)
 
     # 注册回调
     def _on_msg(msg):
@@ -145,7 +184,8 @@ def _run_cli(args):
     print(f"呼号: {settings.device.callsign}-{settings.device.ssid}")
     print(f"服务器: {settings.server.host}:{settings.server.port}")
     print(f"编码: {settings.audio.codec}")
-    print("\n命令: connect | disconnect | status | send <msg> | rooms | join <id> | loc | codec <g711|opus> | exit\n")
+    print(f"录音目录: {recording.get_recordings_dir()}")
+    print("\n命令: connect | disconnect | status | send <msg> | rooms | join <id> | loc | codec <g711|opus> | record | stop | exit\n")
 
     # 命令映射表
     commands = {
@@ -155,6 +195,8 @@ def _run_cli(args):
         'status': lambda: _cmd_status(talk),
         'rooms': lambda: _cmd_rooms(room),
         'loc': lambda: _cmd_loc(talk, location),
+        'record': lambda: _cmd_record(recording),
+        'stop': lambda: _cmd_stop_recording(recording),
     }
 
     while True:
@@ -182,12 +224,18 @@ def _run_cli(args):
             else:
                 print(f"未知命令: {cmd}")
 
+        except EOFError:
+            print()
+            break
         except KeyboardInterrupt:
             print("\n使用 'exit' 退出")
         except Exception as e:
             logger.error(f"命令执行错误: {e}")
 
     # 清理
+    if recording.is_recording:
+        recording.stop_recording()
+    audio.close()
     location.stop_auto_report()
     talk.stop()
     print("78HAM 客户端已关闭")
@@ -261,6 +309,33 @@ def _cmd_codec(codec, talk) -> bool:
         print(f"编码已切换: {codec}")
     else:
         print("切换失败")
+    return True
+
+
+def _cmd_record(recording) -> bool:
+    """开始录音命令"""
+    if recording.is_recording:
+        print("已经在录音中")
+        return True
+    if recording.start_recording():
+        print(f"开始录音... (文件: {recording.recording_file})")
+        print("使用 'stop' 停止录音")
+    else:
+        print("开始录音失败")
+    return True
+
+
+def _cmd_stop_recording(recording) -> bool:
+    """停止录音命令"""
+    if not recording.is_recording:
+        print("没有在录音")
+        return True
+    file_path = recording.stop_recording()
+    if file_path:
+        import os
+        print(f"录音已保存: {os.path.basename(file_path)}")
+    else:
+        print("停止录音失败")
     return True
 
 

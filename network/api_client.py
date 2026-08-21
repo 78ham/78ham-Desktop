@@ -6,7 +6,8 @@ HTTP REST API 客户端
 """
 import logging
 import time
-from typing import Optional, Dict, List, Any
+import threading
+from typing import Optional, Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -28,26 +29,23 @@ class ApiClient:
         self._max_retries = 3
         self._timeout = 10
         self._session = None
+        self._session_lock = threading.Lock()
 
     def _get_session(self):
         """获取共享 requests.Session（延迟初始化）"""
         if self._session is None:
-            try:
-                import requests as _req
-                self._session = _req.Session()
-            except ImportError:
-                return None
+            with self._session_lock:
+                if self._session is None:
+                    try:
+                        import requests as _req
+                        self._session = _req.Session()
+                    except ImportError:
+                        return None
         return self._session
 
     def _request(self, method: str, path: str, data: dict = None,
-                 params: dict = None) -> Optional[Dict]:
+                  params: dict = None) -> Optional[Dict]:
         """发送 HTTP 请求（带重试和 Token）"""
-        try:
-            import requests  # type: ignore
-        except ImportError:
-            logger.error("requests 库未安装，无法使用 HTTP API")
-            return None
-
         url = f"{self.base_url}{path}"
         headers = {}
         if self.token:
@@ -55,6 +53,7 @@ class ApiClient:
 
         session = self._get_session()
         if session is None:
+            logger.error("requests 库未安装，无法使用 HTTP API")
             return None
 
         for attempt in range(self._max_retries):
@@ -66,21 +65,27 @@ class ApiClient:
                     resp = session.post(url, json=data, headers=headers,
                                         timeout=self._timeout)
 
-                if resp.status_code == 200:
-                    result = resp.json()
-                    code = result.get('code', 0)
-                    if code in (20000, 60204, 0):
-                        return result.get('data', result)
-                    else:
-                        logger.warning(f"API 错误: {result.get('message', 'unknown')}")
+                if resp.status_code != 200:
+                    logger.warning(f"HTTP {resp.status_code}: {url}")
+                    if resp.status_code < 500 and resp.status_code != 429:
                         return None
                 else:
-                    logger.warning(f"HTTP {resp.status_code}: {url}")
+                    result = resp.json()
+                    if not isinstance(result, dict):
+                        logger.warning(f"API 返回格式错误: {url}")
+                        return None
+                    code = result.get('code')
+                    # 60204 is the documented login failure code.  It must
+                    # never be treated as a successful response.
+                    if code in (20000, 20001):
+                        return result.get('data', result)
+                    logger.warning(f"API 错误: {result.get('message', 'unknown')}")
+                    return None
 
             except Exception as e:
                 logger.debug(f"请求失败 (尝试 {attempt + 1}): {e}")
-                if attempt < self._max_retries - 1:
-                    time.sleep(1 + attempt)
+            if attempt < self._max_retries - 1:
+                time.sleep(1 + attempt)
 
         return None
 
@@ -113,47 +118,61 @@ class ApiClient:
 
     # ==================== 房间 ====================
 
+    @staticmethod
+    def _items(result) -> List[Dict]:
+        """Normalize the list shapes used by nrllink HTTP responses."""
+        if isinstance(result, list):
+            return result
+        if not isinstance(result, dict):
+            return []
+        items = result.get('items', result.get('list', []))
+        if isinstance(items, dict):
+            return list(items.values())
+        return items if isinstance(items, list) else []
+
     def get_group_list(self) -> List[Dict]:
         """获取公共房间列表"""
-        result = self._request('GET', '/group/list/mini')
-        if result and isinstance(result, list):
-            return result
-        if result and 'list' in result:
-            return result['list']
-        return []
+        result = self._request('POST', '/group/list/mini', data={})
+        return self._items(result)
 
     def get_group_detail(self, group_id: int) -> Optional[Dict]:
         """获取房间详情"""
-        return self._request('GET', '/group/get', params={'id': group_id})
+        return self._request('POST', '/group/get', data={'group_id': str(group_id)})
 
     # ==================== 设备 ====================
 
     def get_device_list(self) -> List[Dict]:
         """获取设备列表"""
-        result = self._request('GET', '/device/list')
-        if result and isinstance(result, list):
-            return result
-        if result and 'list' in result:
-            return result['list']
-        return []
+        result = self._request('POST', '/device/list', data={})
+        return self._items(result)
 
     def update_device(self, device_id: int, data: Dict) -> bool:
         """更新设备信息"""
-        data['id'] = device_id
-        result = self._request('POST', '/device/update', data=data)
+        payload = {**data, 'id': device_id}
+        result = self._request('POST', '/device/update', data=payload)
         return result is not None
 
     # ==================== 平台 ====================
 
     def get_platform_list(self) -> List[Dict]:
         """获取平台服务器列表"""
-        result = self._request('GET', '/platform/list')
-        if result and isinstance(result, list):
-            return result
-        if result and 'list' in result:
-            return result['list']
-        return []
+        # nrllink-web calls this endpoint with POST and sends a query object.
+        result = self._request('POST', '/platform/list', data={})
+        return self._items(result)
 
     def get_platform_info(self) -> Optional[Dict]:
         """获取平台信息"""
         return self._request('GET', '/platform/info')
+
+    def close(self):
+        """Close the reusable HTTP connection pool."""
+        with self._session_lock:
+            session, self._session = self._session, None
+        if session is not None:
+            session.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()

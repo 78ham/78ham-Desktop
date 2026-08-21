@@ -9,7 +9,7 @@ import time
 import customtkinter as ctk
 from typing import Optional, Callable
 
-from ui.theme import Colors, Fonts, Spacing, Sizes
+from ui.theme import Colors, Fonts, Spacing
 
 
 class ChatPanel(ctk.CTkFrame):
