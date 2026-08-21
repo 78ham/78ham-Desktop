@@ -118,8 +118,9 @@ class AudioHandler:
         Args:
             callback: 音频数据回调函数
         """
-        if callback not in self._recording_callbacks:
-            self._recording_callbacks.append(callback)
+        with self.lock:
+            if callback not in self._recording_callbacks:
+                self._recording_callbacks.append(callback)
             logger.debug(f"添加录音回调，当前共 {len(self._recording_callbacks)} 个回调")
     
     def remove_recording_callback(self, callback: Callable[[bytes], None]):
@@ -128,8 +129,9 @@ class AudioHandler:
         Args:
             callback: 要移除的回调函数
         """
-        if callback in self._recording_callbacks:
-            self._recording_callbacks.remove(callback)
+        with self.lock:
+            if callback in self._recording_callbacks:
+                self._recording_callbacks.remove(callback)
             logger.debug(f"移除录音回调，当前共 {len(self._recording_callbacks)} 个回调")
 
     def _ensure_pyaudio(self):
@@ -445,8 +447,11 @@ class AudioHandler:
         with self.lock:
             if not self.is_recording:
                 return (None, pyaudio.paContinue)
-            # 注：不再累积 record_buffer。录音 PCM 通过 audio_callback 实时
-            # 逐帧消费，整段录音无消费方，累积只会导致长时间发射时内存无界增长。
+            # Keep a bounded raw fallback. The local recorder normally uses
+            # the callback fan-out below, but this also preserves data when a
+            # backend delays a callback during stream shutdown.
+            if len(self.record_buffer) < 30000:
+                self.record_buffer.append(bytes(in_data))
 
         # 处理语音数据缓存 - 按PCM帧大小管理
         pending_callbacks = []
@@ -480,8 +485,10 @@ class AudioHandler:
             except Exception:
                 logger.exception("录音数据回调异常")
         
-        # 调用所有注册的录音回调（用于本地录音等）
-        for callback in self._recording_callbacks[:]:  # 使用切片复制避免迭代时修改
+        # Snapshot callbacks under the lock, then invoke them outside it.
+        with self.lock:
+            recording_callbacks = tuple(self._recording_callbacks)
+        for callback in recording_callbacks:
             try:
                 callback(recording_data)
             except Exception:

@@ -44,7 +44,7 @@ class RecordingPanel(ctk.CTkFrame):
         """构建 UI"""
         # 标题
         ctk.CTkLabel(
-            self, text="本地录音",
+            self, text="软件音频录音",
             font=(Fonts.FAMILY_UI, Fonts.SIZE_BODY, "bold"),
         ).pack(anchor="w", padx=Spacing.PAD_SM, pady=(Spacing.PAD_XS, 0))
         

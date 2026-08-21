@@ -390,17 +390,12 @@ class App(ctk.CTk):
         if not self._connected or self._ptt_active:
             return
         
-        # 如果正在录音，提示用户
-        if self._recording and self._recording.is_recording:
-            self._chat_panel.add_system_message("正在录音中，无法发射")
-            return
-        
         if self._talk.start_transmitting():
             self._ptt_active = True
             self._ptt_button.set_transmitting()
             self._voice_send_start = time.time()
             try:
-                self._audio.start_recording(self._talk.send_voice_data)
+                self._audio.start_recording(self._send_voice_frame)
             except Exception as e:
                 logger.error(f"启动录音失败: {e}")
                 self._talk.stop_transmitting()
@@ -599,14 +594,9 @@ class App(ctk.CTk):
             self._chat_panel.add_system_message("录音服务未初始化")
             return
         
-        # 如果正在发射，提示用户
-        if self._ptt_active:
-            self._chat_panel.add_system_message("正在发射中，无法开始录音")
-            return
-        
         if self._recording.start_recording():
             self._recording_panel.set_recording_state(True)
-            self._chat_panel.add_system_message("开始录音")
+            self._chat_panel.add_system_message("开始录制软件音频")
         else:
             self._chat_panel.add_system_message("开始录音失败")
     
@@ -623,6 +613,12 @@ class App(ctk.CTk):
         else:
             self._recording_panel.set_recording_state(False)
             self._chat_panel.add_system_message("停止录音失败")
+
+    def _send_voice_frame(self, pcm_data: bytes) -> bool:
+        """Send a PCM frame and mirror it into the software recording buffer."""
+        if self._recording:
+            self._recording.append_pcm(pcm_data)
+        return self._talk.send_voice_data(pcm_data)
     
     def _on_recording_started(self):
         """录音开始回调"""
@@ -819,6 +815,8 @@ class App(ctk.CTk):
     def _on_service_voice(self, pcm_data: bytes, info: dict):
         """TalkService 语音数据回调（可能从非主线程调用）"""
         from_call = info.get('from', '')
+        if self._recording:
+            self._recording.append_pcm(pcm_data)
         # 播放语音
         if self._audio_panel.playback_enabled:
             self._audio.add_playback_data(pcm_data)
@@ -933,6 +931,8 @@ class App(ctk.CTk):
                 self._location.stop_auto_report()
             if self._talk:
                 self._talk.stop()
+            if self._recording and self._recording.is_recording:
+                self._recording.stop_recording()
             if self._audio:
                 self._audio.close()
             if self._platform:
