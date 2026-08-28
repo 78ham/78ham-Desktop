@@ -101,7 +101,8 @@ class AudioPanel(ctk.CTkFrame):
             font=(Fonts.FAMILY_UI, Fonts.SIZE_SMALL),
             command=self._on_input_device_selected,
         )
-        self._input_device_menu.pack(side="left", padx=Spacing.PAD_SM)
+        self._input_device_menu.pack(side="left", fill="x", expand=True,
+                                      padx=Spacing.PAD_SM)
 
         # 输出设备（扬声器）
         output_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -121,7 +122,8 @@ class AudioPanel(ctk.CTkFrame):
             font=(Fonts.FAMILY_UI, Fonts.SIZE_SMALL),
             command=self._on_output_device_selected,
         )
-        self._output_device_menu.pack(side="left", padx=Spacing.PAD_SM)
+        self._output_device_menu.pack(side="left", fill="x", expand=True,
+                                      padx=Spacing.PAD_SM)
 
         # 编码格式
         codec_frame = ctk.CTkFrame(self, fg_color="transparent")

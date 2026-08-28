@@ -76,9 +76,12 @@ class App(ctk.CTk):
         self._voice_send_start: float = 0.0            # 本机语音发送开始时间
         self._ptt_active = False                       # PTT 发射中标志（热键/鼠标互斥）
         self._tail_tone_save_timer: Optional[str] = None
+        self._compact_layout = False
+        self._layout_after_id: Optional[str] = None
 
         # 构建 UI
         self._build_ui()
+        self.bind("<Configure>", self._on_window_resize)
 
         # 初始化服务
         self._init_services()
@@ -103,6 +106,8 @@ class App(ctk.CTk):
         left_panel = ctk.CTkFrame(content, width=260)
         left_panel.pack(side="left", fill="y", padx=(0, Spacing.PAD_SM))
         left_panel.pack_propagate(False)
+        self._content = content
+        self._left_panel = left_panel
 
         self._ptt_button = PttButton(
             left_panel,
@@ -145,6 +150,7 @@ class App(ctk.CTk):
             on_send_location=self._on_send_location,
         )
         self._chat_panel.pack(side="left", fill="both", expand=True)
+        self._apply_responsive_layout()
 
         # 底部状态栏
         self._status_bar = StatusBar(self)
@@ -155,6 +161,8 @@ class App(ctk.CTk):
         toolbar = ctk.CTkFrame(self, height=40)
         toolbar.pack(fill="x", padx=Spacing.PAD_SM, pady=(Spacing.PAD_SM, 0))
         toolbar.pack_propagate(False)
+        toolbar.grid_columnconfigure(1, weight=1)
+        self._toolbar = toolbar
 
         # 连接按钮
         self._connect_btn = ctk.CTkButton(
@@ -176,7 +184,7 @@ class App(ctk.CTk):
             width=200,
             command=self._on_server_selected,
         )
-        self._server_combo.pack(side="left", padx=Spacing.PAD_MD)
+        self._server_combo.grid(row=0, column=1, sticky="ew", padx=Spacing.PAD_MD)
 
         # 右侧：配置按钮
         self._config_btn = ctk.CTkButton(
@@ -184,7 +192,7 @@ class App(ctk.CTk):
             fg_color="gray",
             command=self._open_config,
         )
-        self._config_btn.pack(side="right", padx=Spacing.PAD_XS)
+        self._config_btn.grid(row=0, column=3, padx=Spacing.PAD_XS)
 
         # 刷新服务器按钮
         self._refresh_servers_btn = ctk.CTkButton(
@@ -192,7 +200,41 @@ class App(ctk.CTk):
             fg_color="gray",
             command=self._on_refresh_platform_servers,
         )
-        self._refresh_servers_btn.pack(side="right", padx=Spacing.PAD_XS)
+        self._refresh_servers_btn.grid(row=0, column=2, padx=Spacing.PAD_XS)
+
+        # Keep the connection control in the fixed first column.
+        self._connect_btn.pack_forget()
+        self._connect_btn.grid(row=0, column=0, padx=Spacing.PAD_XS)
+
+    def _on_window_resize(self, event):
+        """Debounce resize events before rebuilding the geometry managers."""
+        if event.widget is not self:
+            return
+        if self._layout_after_id:
+            self.after_cancel(self._layout_after_id)
+        self._layout_after_id = self.after(100, self._apply_responsive_layout)
+
+    def _apply_responsive_layout(self):
+        """Use a stacked layout when the chat column becomes too narrow."""
+        self._layout_after_id = None
+        compact = self.winfo_width() < 820
+        if compact == self._compact_layout:
+            return
+        self._compact_layout = compact
+
+        self._left_panel.pack_forget()
+        self._chat_panel.pack_forget()
+        if compact:
+            self._left_panel.pack(side="top", fill="x", expand=False,
+                                  padx=0, pady=(0, Spacing.PAD_SM))
+            self._left_panel.pack_propagate(True)
+            self._chat_panel.pack(side="top", fill="both", expand=True)
+        else:
+            self._left_panel.pack(side="left", fill="y",
+                                  padx=(0, Spacing.PAD_SM))
+            self._left_panel.configure(width=260)
+            self._left_panel.pack_propagate(False)
+            self._chat_panel.pack(side="left", fill="both", expand=True)
 
     # ==================== 服务初始化 ====================
 

@@ -113,7 +113,8 @@ class RecordingPanel(ctk.CTkFrame):
             label_text="",
             fg_color=Colors.BG_CARD,
         )
-        self._file_list_frame.pack(fill="x", padx=Spacing.PAD_SM, pady=Spacing.PAD_XS)
+        self._file_list_frame.pack(fill="both", expand=True,
+                                   padx=Spacing.PAD_SM, pady=Spacing.PAD_XS)
         
         # 空列表提示
         self._empty_label = ctk.CTkLabel(
