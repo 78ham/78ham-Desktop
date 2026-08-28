@@ -161,7 +161,7 @@ def _run_cli(args):
         sample_rate=settings.audio.sample_rate,
         codec_type=settings.audio.codec,
     )
-    recording = RecordingService(audio._handler, settings)
+    recording = RecordingService(settings)
 
     # 注册回调
     def _on_msg(msg):
@@ -184,7 +184,7 @@ def _run_cli(args):
     print(f"呼号: {settings.device.callsign}-{settings.device.ssid}")
     print(f"服务器: {settings.server.host}:{settings.server.port}")
     print(f"编码: {settings.audio.codec}")
-    print(f"录音目录: {recording.get_recordings_dir()}")
+    print(f"录音目录: {recording.recordings_dir}")
     print("\n命令: connect | disconnect | status | send <msg> | rooms | join <id> | loc | codec <g711|opus> | record | stop | exit\n")
 
     # 命令映射表

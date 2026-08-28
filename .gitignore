@@ -33,9 +33,10 @@ config/config*.yaml
 # Claude Code
 .claude/
 
-# Test files
+# Test files (ignore scratch scripts at repo root, keep the tests/ suite tracked)
 test_*.py
 validate_*.py
+!tests/test_*.py
 
 # OS files
 .DS_Store

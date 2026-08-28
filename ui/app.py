@@ -7,8 +7,10 @@
 import os
 import time
 import logging
+import subprocess
 import threading
 import customtkinter as ctk
+from tkinter import filedialog
 from typing import Optional
 
 from config.settings import Settings
@@ -140,6 +142,7 @@ class App(ctk.CTk):
             on_start_recording=self._on_start_recording,
             on_stop_recording=self._on_stop_recording,
             on_open_recordings_dir=self._on_open_recordings_dir,
+            on_change_save_dir=self._on_change_save_dir,
         )
         self._recording_panel.pack(fill="x", pady=(0, Spacing.PAD_SM))
 
@@ -250,14 +253,13 @@ class App(ctk.CTk):
             codec_type=self._settings.audio.codec,
         )
         
-        # 录音服务
-        self._recording = RecordingService(
-            self._audio._handler,  # 获取底层的 AudioHandler
-            self._settings,
-        )
-        self._recording.on_recording_started = self._on_recording_started
-        self._recording.on_recording_stopped = self._on_recording_stopped
-        self._recording.on_recording_error = self._on_recording_error
+        # 录音服务（软件 PCM 缓存，不打开麦克风）
+        self._recording = RecordingService(self._settings)
+        # 自动到时停止可能来自定时器线程，回调统一编组回主线程处理
+        self._recording.on_recording_stopped = self._on_service_recording_stopped
+        self._recording.on_recording_error = self._on_service_recording_error
+        self._recording_panel.set_recordings_dir(self._recording.recordings_dir)
+        self._recording_panel.set_files(self._recording.list_recordings())
         
         # 平台服务（拉取平台服务器列表）
         self._platform = PlatformService(self._settings)
@@ -566,22 +568,21 @@ class App(ctk.CTk):
             self._audio_panel.set_codec(self._settings.audio.codec)
             return
 
+        # 录音中先拒绝切换，避免服务层已切换而 UI 回滚的状态不一致
+        if self._recording and self._recording.is_recording:
+            self._chat_panel.add_system_message("录音中无法切换编码")
+            self._audio_panel.set_codec(self._settings.audio.codec)
+            return
+
         old_codec = self._settings.audio.codec
         if not self._talk.set_codec(codec):
             self._chat_panel.add_system_message("编码切换失败")
             self._audio_panel.set_codec(self._settings.audio.codec)
             return
 
-        if self._recording and self._recording.is_recording:
-            self._chat_panel.add_system_message("录音中无法切换编码")
-            self._audio_panel.set_codec(self._settings.audio.codec)
-            return
-
         try:
             sample_rate = 16000 if codec == 'opus' else 8000
             self._audio.set_codec(codec, sample_rate)
-            if self._recording:
-                self._recording.bind_audio_handler(self._audio._handler)
         except Exception:
             logger.exception("重建音频流失败")
             self._talk.set_codec(old_codec)
@@ -635,58 +636,75 @@ class App(ctk.CTk):
         if not self._recording:
             self._chat_panel.add_system_message("录音服务未初始化")
             return
-        
+
         if self._recording.start_recording():
             self._recording_panel.set_recording_state(True)
             self._chat_panel.add_system_message("开始录制软件音频")
         else:
-            self._chat_panel.add_system_message("开始录音失败")
-    
+            self._chat_panel.add_system_message("开始录音失败（可能已在录音中）")
+
     def _on_stop_recording(self):
-        """停止录音"""
-        if not self._recording:
-            return
-        
-        recording_file = self._recording.stop_recording()
-        if recording_file:
-            self._recording_panel.set_recording_state(False)
-            self._recording_panel.add_recording_file(recording_file)
-            self._chat_panel.add_system_message(f"录音已保存: {os.path.basename(recording_file)}")
-        else:
-            self._recording_panel.set_recording_state(False)
-            self._chat_panel.add_system_message("停止录音失败")
+        """手动停止录音；保存结果统一由录音完成回调处理"""
+        if self._recording:
+            self._recording.stop_recording()
 
     def _send_voice_frame(self, pcm_data: bytes) -> bool:
         """Send a PCM frame and mirror it into the software recording buffer."""
         if self._recording:
             self._recording.append_pcm(pcm_data)
         return self._talk.send_voice_data(pcm_data)
-    
-    def _on_recording_started(self):
-        """录音开始回调"""
-        pass  # 已在 _on_start_recording 中处理
-    
-    def _on_recording_stopped(self, file_path: str):
-        """录音停止回调"""
-        pass  # 已在 _on_stop_recording 中处理
-    
-    def _on_recording_error(self, error_msg: str):
-        """录音错误回调"""
-        self._chat_panel.add_system_message(f"录音错误: {error_msg}")
+
+    def _on_service_recording_stopped(self, file_path: str):
+        """录音完成回调（可能在最长时长定时器线程触发）"""
+        self.after(0, lambda: self._on_recording_finished(file_path))
+
+    def _on_service_recording_error(self, error_msg: str):
+        """录音错误回调（可能在最长时长定时器线程触发）"""
+        self.after(0, lambda: self._on_recording_failed(error_msg))
+
+    def _on_recording_finished(self, file_path: str):
+        """录音保存成功（主线程）"""
         self._recording_panel.set_recording_state(False)
-    
+        self._recording_panel.add_recording_file(file_path)
+        self._chat_panel.add_system_message(
+            f"录音已保存: {os.path.basename(file_path)}")
+
+    def _on_recording_failed(self, error_msg: str):
+        """录音保存失败（主线程）"""
+        self._recording_panel.set_recording_state(False)
+        self._chat_panel.add_system_message(f"录音错误: {error_msg}")
+
     def _on_open_recordings_dir(self):
         """打开录音目录"""
-        if self._recording:
-            recordings_dir = self._recording.get_recordings_dir()
-            try:
-                os.startfile(recordings_dir)
-            except AttributeError:
-                # Linux/Mac
-                import subprocess
-                subprocess.Popen(['xdg-open', recordings_dir])
-            except Exception as e:
-                self._chat_panel.add_system_message(f"打开录音目录失败: {e}")
+        if not self._recording:
+            return
+        recordings_dir = self._recording.recordings_dir
+        try:
+            os.startfile(recordings_dir)
+        except AttributeError:
+            # Linux/Mac
+            subprocess.Popen(['xdg-open', recordings_dir])
+        except Exception as e:
+            self._chat_panel.add_system_message(f"打开录音目录失败: {e}")
+
+    def _on_change_save_dir(self):
+        """选择录音保存目录并持久化"""
+        if not self._recording:
+            return
+        chosen = filedialog.askdirectory(
+            parent=self, title="选择录音保存目录",
+            initialdir=self._recording.recordings_dir)
+        if not chosen:
+            return
+        if not self._recording.set_recordings_dir(chosen):
+            self._chat_panel.add_system_message(f"录音目录不可用: {chosen}")
+            return
+        self._settings.recording.save_dir = chosen
+        if not self._settings.save_recording():
+            self._chat_panel.add_system_message("录音目录写入配置失败（本次运行内仍然生效）")
+        self._recording_panel.set_recordings_dir(chosen)
+        self._recording_panel.set_files(self._recording.list_recordings())
+        self._chat_panel.add_system_message(f"录音保存目录已切换: {chosen}")
 
     def _persist_tail_tone(self):
         """合并短时间内连续产生的滑块配置写入。"""
@@ -735,6 +753,13 @@ class App(ctk.CTk):
         self._settings.network = refreshed.network
         self._settings.location = refreshed.location
         self._settings.tail_tone = refreshed.tail_tone
+        self._settings.recording = refreshed.recording
+        # 同步录音保存目录显示（保存目录可能随配置更新）
+        if self._recording:
+            if self._settings.recording.save_dir:
+                self._recording.set_recordings_dir(self._settings.recording.save_dir)
+            self._recording_panel.set_recordings_dir(self._recording.recordings_dir)
+            self._recording_panel.set_files(self._recording.list_recordings())
         self._settings.servers_list = refreshed.servers_list
         self._settings.current_server_index = refreshed.current_server_index
 

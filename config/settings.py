@@ -167,6 +167,7 @@ class RecordingConfig:
     auto_save: bool = True          # 是否自动保存录音
     max_duration: int = 3600        # 最大录音时长（秒），0表示无限制
     output_format: str = "wav"      # 输出格式：wav
+    save_dir: str = ""              # 录音保存目录，空表示使用默认目录
 
 
 @dataclass
@@ -307,6 +308,7 @@ class Settings:
             auto_save=_as_bool(rec.get('auto_save'), True),
             max_duration=_as_int(rec.get('max_duration'), 3600, 0, 86400),
             output_format=output_format,
+            save_dir=str(rec.get('save_dir') or ''),
         )
 
 
@@ -476,6 +478,7 @@ class Settings:
                 'auto_save': rec.auto_save,
                 'max_duration': rec.max_duration,
                 'output_format': rec.output_format,
+                'save_dir': rec.save_dir,
             })
 
         saved = self._update_config('recording', update)
@@ -572,6 +575,7 @@ class Settings:
                 'auto_save': self.recording.auto_save,
                 'max_duration': self.recording.max_duration,
                 'output_format': self.recording.output_format,
+                'save_dir': self.recording.save_dir,
             },        }
 
     def save_updates(self, updates: Mapping[str, Any]) -> bool:
